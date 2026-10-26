@@ -89,6 +89,12 @@ class Client:
         name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] + ".txt"
         return os.path.join(self.cache, self.today, name)
 
+    def forget(self, url):
+        """Drop today's cached answer for url (it was not what the caller expected)."""
+        p = self._cache_path(url)
+        if os.path.exists(p):
+            os.remove(p)
+
     def get_text(self, url, cookie=True):
         p = self._cache_path(url)
         if os.path.exists(p):
@@ -110,5 +116,5 @@ class Client:
         try:
             return json.loads(text)
         except ValueError:
-            os.remove(self._cache_path(url))
+            self.forget(url)
             raise NseBlocked(url, "the answer was not JSON, probably a block page")

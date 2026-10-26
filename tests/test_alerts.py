@@ -203,7 +203,7 @@ class Cli(unittest.TestCase):
 
     def test_check_without_rules(self):
         code, _, err = run(["check", "--rules", self.rules, "--kite-dir", KDIR])
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("no rules", err)
 
     def test_bad_symbol(self):
@@ -275,6 +275,82 @@ class Need(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(json.loads(text), {"quotes": ["NSE:INFY", "NSE:M&M"], "positions": True})
             self.assertEqual(run(["need", "--rules", os.path.join(d, "none.json")])[0], 1)
+
+
+class ReviewFixes(unittest.TestCase):
+    """Findings from the phase 1 whole-branch review."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.d = self.tmp.name
+        self.rules = os.path.join(self.d, "alerts.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_rules(self, rules):
+        with open(self.rules, "w") as fh:
+            json.dump({"rules": rules}, fh)
+
+    def check(self, now, kite_dir=KDIR):
+        return run(["check", "--rules", self.rules, "--state", os.path.join(self.d, "state.json"),
+                    "--prices-out", os.path.join(self.d, "prices.json"), "--kite-dir", kite_dir,
+                    "--holidays", os.path.join(self.d, "h.json"), "--now", now])
+
+    def test_hand_written_rule_symbols_are_normalised(self):
+        self.write_rules([{"id": "a", "symbol": "nse:infy", "type": "above", "price": 1600},
+                          {"id": "b", "symbol": "infy.ns", "type": "above", "price": 1600}])
+        code, text, _ = run(["need", "--rules", self.rules, "--json"])
+        self.assertEqual(json.loads(text)["quotes"], ["NSE:INFY"])
+        code, text, _ = self.check("2026-10-26T15:30")
+        self.assertEqual(code, 0)
+        self.assertEqual(text.count("ALERT INFY"), 2)
+        self.assertNotIn("NSE:NSE", text)
+
+    def test_bad_rule_symbol_is_an_error(self):
+        self.write_rules([{"id": "a", "symbol": "BSE:INFY", "type": "above", "price": 1}])
+        code, _, err = self.check("2026-10-26T15:30")
+        self.assertEqual(code, 2)
+        self.assertIn("only NSE symbols", err)
+
+    def test_unknown_year_is_flagged_in_check(self):
+        self.write_rules([{"id": "bell", "type": "opening_bell"}])
+        code, text, _ = self.check("2027-01-26T09:30")
+        self.assertIn("holiday list for 2027 is not loaded", text)
+        self.assertIn("may be an NSE holiday", text)
+
+    def test_errors_never_look_like_nothing_hit(self):
+        self.write_rules([{"id": "x", "type": "above", "symbol": "INFY"}])
+        self.assertEqual(self.check("2026-10-26T15:30")[0], 2)
+        self.write_rules([{"id": "i", "symbol": "INFY", "type": "above", "price": 9000},
+                          {"id": "t", "symbol": "TCS", "type": "above", "price": 9000}])
+        code, text, _ = self.check("2026-10-26T15:30")
+        self.assertEqual(code, 2)
+        self.assertIn("add NSE:TCS", text)
+
+    def test_old_quote_inside_a_fresh_snapshot_is_refused_in_session(self):
+        now = ist("2026-10-26T15:00")
+        ks.save("quotes", {"NSE:INFY": {"last_price": 1600, "timestamp": "2026-10-26 14:50:00",
+                                        "ohlc": {"close": 1590}}}, self.d, now=now)
+        q, errors = alerts.get_quotes(["INFY"], self.d, now, session_open=True)
+        self.assertEqual(q, {})
+        self.assertIn("Kite's quote for NSE:INFY is from 2026-10-26 14:50:00", errors[0])
+        q, errors = alerts.get_quotes(["INFY"], self.d, now, session_open=False)
+        self.assertEqual(sorted(q), ["INFY"])
+
+    def test_zero_price_is_not_a_price(self):
+        now = ist("2026-10-26T15:00")
+        ks.save("quotes", {"NSE:TCS": {"last_price": 0}}, self.d, now=now)
+        q, errors = alerts.get_quotes(["TCS"], self.d, now)
+        self.assertEqual(q, {})
+        self.assertEqual(errors, ["Kite gave no usable price for NSE:TCS"])
+
+    def test_prices_json_dates_each_symbol(self):
+        path = os.path.join(self.d, "prices.json")
+        alerts.write_prices(path, {"INFY": quotes()["INFY"]}, ist("2026-10-26T15:30"))
+        with open(path) as fh:
+            doc = json.load(fh)
+        self.assertEqual(doc["detail"]["INFY"]["as_of"], "2026-10-26T15:30:00+05:30")
 
 
 if __name__ == "__main__":

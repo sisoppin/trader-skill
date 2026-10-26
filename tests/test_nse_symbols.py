@@ -89,5 +89,26 @@ class Refresh(unittest.TestCase):
         self.assertRegex(out.getvalue(), r"NIFTYBEES\s+not in NSE's equity list")
 
 
+class BlockedRefresh(unittest.TestCase):
+    def test_html_with_200_is_blocked_and_not_cached(self):
+        nse = sy.nse
+
+        class Opener:
+            calls = 0
+
+            def open(self, req, timeout=None):
+                Opener.calls += 1
+                return io.BytesIO(b"<html>Access Denied</html>")
+
+        with tempfile.TemporaryDirectory() as d:
+            c = nse.Client(cache=d, opener=Opener(), sleep=lambda s: None, today="2026-10-26")
+            with self.assertRaises(nse.NseBlocked) as e:
+                sy.refresh(os.path.join(d, "EQUITY_L.csv"), client=c)
+            self.assertIn("--file", str(e.exception))
+            with self.assertRaises(nse.NseBlocked):
+                sy.refresh(os.path.join(d, "EQUITY_L.csv"), client=c)
+            self.assertEqual(Opener.calls, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

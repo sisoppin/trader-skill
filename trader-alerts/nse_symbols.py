@@ -87,8 +87,17 @@ def load(path=CACHE):
 
 def refresh(dest=CACHE, client=None, file=None):
     """Fetch (or read) EQUITY_L.csv, check that it parses, save it to dest. Returns the symbol count."""
-    text = nse.read_file(file) if file else (client or nse.Client()).get_text(URL, cookie=False)
-    rows = parse(text)
+    if file:
+        text = nse.read_file(file)
+        rows = parse(text)
+    else:
+        client = client or nse.Client()
+        text = client.get_text(URL, cookie=False)
+        try:
+            rows = parse(text)
+        except SymbolError:
+            client.forget(URL)
+            raise nse.NseBlocked(URL, "the answer was not NSE's equity list, probably a block page")
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
     with open(dest, "w", encoding="utf-8") as fh:
         fh.write(text)

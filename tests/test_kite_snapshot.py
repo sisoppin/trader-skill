@@ -110,8 +110,11 @@ class Quotes(unittest.TestCase):
 class Cli(unittest.TestCase):
     def test_save_and_show(self):
         with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "raw.json")  # a fresh file, as Claude writes one per connector call
+            with open(src, "w") as fh:
+                json.dump(raw("quotes-raw.json"), fh)
             with redirect_stdout(io.StringIO()):
-                code = ks.main(["save", "quotes", "--from", os.path.join(KDIR, "quotes-raw.json"), "--dir", d])
+                code = ks.main(["save", "quotes", "--from", src, "--dir", d])
             self.assertEqual(code, 0)
             out = io.StringIO()
             with redirect_stdout(out):
@@ -129,6 +132,28 @@ class Cli(unittest.TestCase):
                 code = ks.main(["save", "quotes", "--from", bad, "--dir", d])
             self.assertEqual(code, 1)
             self.assertIn("not JSON", err.getvalue())
+
+
+class ReviewFixes(unittest.TestCase):
+    def test_an_old_raw_file_is_not_restamped_as_fresh(self):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "raw.json")
+            with open(src, "w") as fh:
+                json.dump({"NSE:INFY": {"last_price": 1600}}, fh)
+            old = os.path.getmtime(src) - 600
+            os.utime(src, (old, old))
+            err = io.StringIO()
+            with redirect_stderr(err):
+                code = ks.main(["save", "quotes", "--from", src, "--dir", d])
+            self.assertEqual(code, 1)
+            self.assertIn("written 600 s ago", err.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(d, "quotes.json")))
+
+    def test_quote_time_and_zero_price(self):
+        q = ks.quotes({"NSE:INFY": {"last_price": 1600, "timestamp": "2026-10-26 15:29:58"},
+                       "NSE:TCS": {"last_price": 0}})
+        self.assertEqual(sorted(q), ["INFY"])
+        self.assertEqual(q["INFY"]["quote_time"], "2026-10-26 15:29:58")
 
 
 if __name__ == "__main__":

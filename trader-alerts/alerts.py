@@ -35,8 +35,10 @@ script reads trader/kite/quotes.json and refuses it when it is more than 120
 seconds old. Nothing here fetches prices from the web, and nothing here places
 an order.
 
-check exits 0 when something rang, 1 when nothing did, and 2 when the price
-rules could not be checked (no fresh quotes).
+check exits 0 when something rang, 1 when nothing rang and every rule was
+checked, and 2 when anything could not be checked (missing or stale Kite
+data, a symbol missing from the snapshot, a bad rules file). A scheduled run
+must treat 2 as "look at this", never as "all quiet".
 """
 
 import argparse
@@ -111,19 +113,42 @@ def calendar(a):
 
 # ---------------------------------------------------------------- quotes
 
-def get_quotes(symbols, kite_dir, now):
-    """({SYM: quote}, [errors]) from the Kite quotes snapshot. A symbol missing from the
-    snapshot is an error naming the Kite instrument to add."""
+STALE_QUOTE = 300  # seconds: in market hours, Kite's own quote time may lag the snapshot by this much
+
+
+def _quote_age(q, now):
+    """Seconds between Kite's quote timestamp (IST, no offset) and now, or None if unknown."""
     try:
-        snap = kite_snapshot.quotes(kite_snapshot.load("quotes", kite_dir, now=now))
+        t = datetime.datetime.strptime(q.get("quote_time") or "", "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return (now - t.replace(tzinfo=nse_calendar.IST)).total_seconds()
+
+
+def get_quotes(symbols, kite_dir, now, session_open=False):
+    """({SYM: quote}, [errors]) from the Kite quotes snapshot. A symbol missing from the
+    snapshot, without a usable price, or (in market hours) with an old Kite quote time is an
+    error naming the Kite instrument, never a silent skip."""
+    try:
+        raw = kite_snapshot.load("quotes", kite_dir, now=now)
     except kite_snapshot.SnapshotError as e:
         return {}, [str(e)]
+    snap = kite_snapshot.quotes(raw)
     quotes, errors = {}, []
     for s in symbols:
-        if s in snap:
-            quotes[s] = snap[s]
-        else:
-            errors.append("%s is not in the Kite quotes snapshot: add NSE:%s to the quotes call" % (s, s))
+        q = snap.get(s)
+        if q is None:
+            if isinstance(raw, dict) and ("NSE:" + s) in raw:
+                errors.append("Kite gave no usable price for NSE:%s" % s)
+            else:
+                errors.append("%s is not in the Kite quotes snapshot: add NSE:%s to the quotes call" % (s, s))
+            continue
+        age = _quote_age(q, now)
+        if session_open and age is not None and age > STALE_QUOTE:
+            errors.append("Kite's quote for NSE:%s is from %s, more than %d s old in market hours: "
+                          "refresh the quotes" % (s, q["quote_time"], STALE_QUOTE))
+            continue
+        quotes[s] = q
     return quotes, errors
 
 
@@ -139,10 +164,12 @@ def write_prices(path, quotes, now):
     detail = dict(old.get("detail", {}))
     for s, q in quotes.items():
         prices[s] = q["price"]
-        detail[s] = {"prev_close": q.get("prev_close"), "time": q.get("time"), "source": "kite",
+        detail[s] = {"as_of": now.isoformat(), "prev_close": q.get("prev_close"), "time": q.get("time"),
+                     "source": "kite",
                      "upper_circuit": q.get("upper_circuit"), "lower_circuit": q.get("lower_circuit")}
     doc = {"as_of": now.isoformat(), "source": "kite", "currency": "INR",
-           "note": "Quotes from the Kite connector. The exchange price is the one that fills.",
+           "note": "Quotes from the Kite connector. as_of is when this file was last written; each symbol's "
+                   "own detail.as_of is when its price was saved. The exchange price is the one that fills.",
            "prices": prices, "detail": detail}
     _write(path, doc)
     return doc
@@ -180,6 +207,14 @@ def mis_due(rules, status, now):
             and now.time() >= _hhmm(r.get("at", MIS_WARNING_AT), r.get("id"))]
 
 
+def rule_symbol(rule):
+    """The rule's symbol, normalised the same way as add does ("nse:infy" -> "INFY")."""
+    try:
+        return nse_symbols.normalize(rule.get("symbol"))
+    except nse_symbols.SymbolError as e:
+        raise AlertError("rule %s: %s" % (rule.get("id"), e))
+
+
 def validate(rule):
     t = rule.get("type")
     if t not in PRICE_TYPES:
@@ -208,8 +243,11 @@ def evaluate(rules, quotes, status, state, now, positions=None):
         typ = {"stop": "below", "target": "above"}.get(r["type"], r["type"])
         if typ == "opening_bell":
             if status["open"] and rung.get(rid, "")[:10] != today:
-                rings.append({"id": rid, "symbol": "",
-                              "message": "Opening bell: NSE is open (%s IST)." % status["now_ist"]})
+                msg = "Opening bell: NSE is open (%s IST)." % status["now_ist"]
+                if not status.get("calendar_known", True):
+                    msg += (" It may be an NSE holiday: the holiday list for %s is not loaded."
+                            % status["date"][:4])
+                rings.append({"id": rid, "symbol": "", "message": msg})
                 rung[rid] = stamp
             continue
         if typ == "mis_warning":
@@ -223,7 +261,7 @@ def evaluate(rules, quotes, status, state, now, positions=None):
                            nse_calendar.SQUARE_OFF.strftime("%H:%M")))})
                     rung[rid] = stamp
             continue
-        sym = r["symbol"].upper()
+        sym = rule_symbol(r)
         q = quotes.get(sym)
         if not q:
             continue
@@ -294,7 +332,7 @@ def cmd_quote(a):
     syms = _dedupe([nse_symbols.normalize(s) for s in a.symbols])
     if not syms:
         syms = sorted(kite_snapshot.quotes(kite_snapshot.load("quotes", a.kite_dir, now=now)))
-    quotes, errors = get_quotes(syms, a.kite_dir, now)
+    quotes, errors = get_quotes(syms, a.kite_dir, now, calendar(a).status(now)["open"])
     if a.write and quotes:
         write_prices(a.write, quotes, now)
     if a.json:
@@ -322,8 +360,10 @@ def cmd_check(a):
     rules = doc["rules"]
     now = nse_calendar.parse_now(a.now)
     status = calendar(a).status(now)
-    syms = _dedupe([str(r.get("symbol", "")).upper() for r in rules if r.get("type") not in CLOCK_TYPES])
-    quotes, errors = get_quotes(syms, a.kite_dir, now) if syms else ({}, [])
+    for r in rules:
+        validate(r)
+    syms = _dedupe([rule_symbol(r) for r in rules if r.get("type") not in CLOCK_TYPES])
+    quotes, errors = get_quotes(syms, a.kite_dir, now, status["open"]) if syms else ({}, [])
     positions = None
     due = mis_due(rules, status, now)
     if due:
@@ -343,6 +383,9 @@ def cmd_check(a):
     else:
         print("NSE %s (%s IST, %s)." % ("OPEN" if status["open"] else "closed", status["now_ist"],
                                         status["reason"]))
+        if not status["calendar_known"]:
+            print("NSE's holiday list for %s is not loaded, so today may be a holiday: run alerts.py "
+                  "holidays refresh." % status["date"][:4])
         for r in rings:
             print("ALERT " + r["message"])
         if not rings:
@@ -354,13 +397,12 @@ def cmd_check(a):
                   "trader-rebalance), check it (trader-risk) and say yes to it (trader-broker).")
     if rings:
         return 0
-    return 2 if (syms and not quotes) or (due and positions is None) else 1
+    return 2 if errors else 1
 
 
 def cmd_need(a):
     rules = _read(a.rules, {"rules": []}).get("rules", [])
-    keys = _dedupe(["NSE:" + str(r["symbol"]).upper() for r in rules
-                    if r.get("type") not in CLOCK_TYPES and r.get("symbol")])
+    keys = _dedupe(["NSE:" + rule_symbol(r) for r in rules if r.get("type") not in CLOCK_TYPES])
     pos = any(r.get("type") == "mis_warning" for r in rules)
     if a.json:
         print(json.dumps({"quotes": keys, "positions": pos}))
@@ -501,7 +543,7 @@ def main(argv=None):
     except (AlertError, nse.NseError, nse_calendar.CalendarError, kite_snapshot.SnapshotError,
             nse_symbols.SymbolError) as e:
         print("alerts.py: %s" % e, file=sys.stderr)
-        return 1
+        return 2 if a.cmd == "check" else 1
 
 
 if __name__ == "__main__":

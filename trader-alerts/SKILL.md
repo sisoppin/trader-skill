@@ -33,7 +33,7 @@ python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol RELIANCE --stop 1350 --note
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol TCS --pct 3
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --opening-bell
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --mis-warning --at 15:05
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" check                         # 0 rang, 1 nothing, 2 no fresh data
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" check                         # 0 rang, 1 nothing, 2 could not check all
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" list
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" reset infy-above-1700
 ```

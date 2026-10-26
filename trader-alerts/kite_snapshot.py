@@ -24,6 +24,7 @@ import datetime
 import json
 import os
 import sys
+import time
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), "IST")
 DIR = os.path.join("trader", "kite")
@@ -126,20 +127,23 @@ def _f(x):
 
 def quotes(data):
     """Kite quotes {"NSE:INFY": {...}} -> {"INFY": {symbol, exchange, price, prev_close, open, high,
-    low, upper_circuit, lower_circuit, time}}. NSE symbols are keyed bare, others as EXCH:SYM."""
+    low, upper_circuit, lower_circuit, time, quote_time}}. NSE symbols are keyed bare, others as
+    EXCH:SYM. An entry without a positive last_price is left out: it is not a price."""
     out = {}
     for key, q in (data or {}).items():
-        if not isinstance(q, dict) or _f(q.get("last_price")) is None:
+        price = _f(q.get("last_price")) if isinstance(q, dict) else None
+        if price is None or price <= 0:
             continue
         exch, sym = key.split(":", 1) if ":" in key else ("NSE", key)
         ohlc = q.get("ohlc") or {}
         out[sym if exch == "NSE" else key] = {
-            "symbol": sym, "exchange": exch, "price": _f(q["last_price"]),
+            "symbol": sym, "exchange": exch, "price": price,
             "prev_close": _f(ohlc.get("close")), "open": _f(ohlc.get("open")),
             "high": _f(ohlc.get("high")), "low": _f(ohlc.get("low")),
             "upper_circuit": _f(q.get("upper_circuit_limit")),
             "lower_circuit": _f(q.get("lower_circuit_limit")),
-            "time": str(q.get("last_trade_time") or q.get("timestamp") or "")}
+            "time": str(q.get("last_trade_time") or q.get("timestamp") or ""),
+            "quote_time": str(q.get("timestamp") or "")}
     return out
 
 
@@ -159,6 +163,11 @@ def main(argv=None):
     try:
         if a.cmd == "save":
             if a.src:
+                written = time.time() - os.path.getmtime(a.src)
+                if written > MAX_AGE[a.kind]:
+                    raise SnapshotError("%s was written %d s ago (limit %d s for %s): call the Kite connector "
+                                        "again instead of re-saving an old answer"
+                                        % (a.src, written, MAX_AGE[a.kind], a.kind))
                 with open(a.src, encoding="utf-8-sig") as fh:
                     text = fh.read()
             else:
