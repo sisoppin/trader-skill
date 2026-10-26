@@ -13,8 +13,8 @@ Not tax advice: arithmetic on your trades.
                term (LTCG); otherwise short term (STCG). Bought 2025-01-10:
                sold 2026-01-10 is short term, 2026-01-11 long term.
   2018 rule    for shares bought before 2018-02-01, the cost of a long-term
-               sale is the higher of the actual cost and the 31 Jan 2018
-               price, but never above the sale price (grandfathering)
+               sale is the higher of the actual cost and the lower of the
+               31 Jan 2018 price and the sale price (grandfathering)
 """
 
 import datetime
@@ -24,11 +24,11 @@ EPS = 1e-9
 
 
 def anniversary(d):
-    """The same date a year later (29 Feb becomes 1 Mar)."""
+    """The same date a year later (29 Feb becomes 28 Feb)."""
     try:
         return d.replace(year=d.year + 1)
     except ValueError:
-        return datetime.date(d.year + 1, 3, 1)
+        return d.replace(year=d.year + 1, day=28)
 
 
 def term(acquired, sold):

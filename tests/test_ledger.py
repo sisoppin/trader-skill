@@ -27,7 +27,9 @@ class Terms(unittest.TestCase):
     def test_more_than_twelve_months_is_long_term(self):
         self.assertEqual(ledger.term(D(2025, 1, 10), D(2026, 1, 10)), "STCG")
         self.assertEqual(ledger.term(D(2025, 1, 10), D(2026, 1, 11)), "LTCG")
-        self.assertEqual(ledger.anniversary(D(2024, 2, 29)), D(2025, 3, 1))
+        self.assertEqual(ledger.anniversary(D(2024, 2, 29)), D(2025, 2, 28))
+        self.assertEqual(ledger.term(D(2024, 2, 29), D(2025, 2, 28)), "STCG")
+        self.assertEqual(ledger.term(D(2024, 2, 29), D(2025, 3, 1)), "LTCG")
 
 
 class Build(unittest.TestCase):
