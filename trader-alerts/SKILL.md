@@ -1,16 +1,17 @@
 ---
 name: trader-alerts
 description: >-
-  Price Alerts. Rings when a price target, a stop or the opening bell hits:
-  above / below / stop rules, percent moves from the previous close, and the
-  NYSE opening bell, each ringing once so you are not spammed. Knows NYSE
-  hours with the 2026 and 2027 holidays and 1:00 p.m. early closes, fetches
-  free delayed quotes (Yahoo chart JSON, Stooq CSV) one ticker at a time, and
-  writes trader/prices.json for the other skills. Use when the user says
-  "alert me when", "tell me if AAPL hits", "set a stop", "price target",
-  "watch my stocks", "is the market open", "when does the market open",
-  "get me prices", or to refresh prices before sizing, risk or tax.
-argument-hint: "[ticker] [price]"
+  Price Alerts for NSE stocks. Rings when a price target, a stop, a percent
+  move from the previous close, the NSE opening bell or an open MIS position
+  near Zerodha's 15:20 square-off hits, each ringing once so you are not
+  spammed. Knows NSE hours in IST (09:15 to 15:30) and NSE trading holidays,
+  reads live quotes and positions that Claude saves from the Kite connector,
+  and writes trader/prices.json for the other skills. Use when the user says
+  "alert me when", "tell me if INFY hits", "set a stop", "price target",
+  "watch my stocks", "is the market open", "when does NSE open", "remind me
+  to close my intraday", "get me prices", or to refresh prices before
+  sizing, risk or tax.
+argument-hint: "[symbol] [price]"
 ---
 
 # trader-alerts
@@ -22,25 +23,47 @@ wants to act, the normal path runs (size, risk, their yes).
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" clock                         # NYSE open or closed, next open
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote AAPL KO --write         # -> trader/prices.json
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote --holdings --write      # portfolio + targets tickers
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol AAPL --above 350
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol BAC --stop 50 --note "my stop"
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol KO --pct 3
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" clock                         # NSE open or closed, next open
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" holidays refresh              # NSE holiday list into trader/cache
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" need                          # which Kite quotes a check needs
+python3 "${CLAUDE_SKILL_DIR}/kite_snapshot.py" save quotes --from raw.json
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" quote INFY RELIANCE --write   # -> trader/prices.json
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol INFY --above 1700
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol RELIANCE --stop 1350 --note "my stop"
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --symbol TCS --pct 3
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --opening-bell
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" check                         # exit 0 = something rang
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" add --mis-warning --at 15:05
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" check                         # 0 rang, 1 nothing, 2 no fresh data
 python3 "${CLAUDE_SKILL_DIR}/alerts.py" list
-python3 "${CLAUDE_SKILL_DIR}/alerts.py" reset aapl-above-350
+python3 "${CLAUDE_SKILL_DIR}/alerts.py" reset infy-above-1700
 ```
+
+## Getting prices from Kite
+
+The script never fetches prices itself. Before every `quote` or `check`:
+
+1. Run `alerts.py need` to get the Kite instruments (for example
+   `NSE:INFY NSE:RELIANCE`) and whether positions are needed.
+2. Call the Kite connector's quotes tool for exactly those instruments.
+3. Write its answer, unchanged, to a temp file and run
+   `kite_snapshot.py save quotes --from <file>`. It stamps the time.
+4. If `need` says positions, call the connector's positions tool and
+   `kite_snapshot.py save positions --from <file>` the same way.
+5. Run `check` within two minutes. Quotes older than 120 seconds are
+   refused, and so are positions older than 10 minutes.
+
+If the connector is not logged in, ask the user to log in to Kite. Never
+type prices in by hand.
 
 ## What it reads and writes
 
 | file | what |
 | --- | --- |
 | `trader/alerts.json` | the rules (`alerts.example.json` in this folder) |
+| `trader/kite/quotes.json`, `trader/kite/positions.json` | Kite snapshots saved by `kite_snapshot.py` |
+| `trader/cache/nse/holidays.json` | NSE's holiday list, saved by `holidays refresh` |
 | `trader/state/alerts.json` | which rules rang and when, so each rings once |
-| `trader/prices.json` | the latest quotes, merged in, for trader-budget, trader-risk, trader-tax and trader-rebalance |
+| `trader/prices.json` | the latest prices in rupees, merged in, for the other skills |
 
 ## Rule types
 
@@ -49,65 +72,50 @@ python3 "${CLAUDE_SKILL_DIR}/alerts.py" reset aapl-above-350
 | `above` | price at or above `price` | after `reset`, or on its own if `"rearm": true` and the price fell back |
 | `below` / `stop` | price at or below `price` | same |
 | `pct_move` | moved `pct` percent from the previous close (or `ref`), optional `direction` up or down | once per day at most |
-| `opening_bell` | the NYSE is open | once per trading day |
+| `opening_bell` | NSE is open | once per trading day |
+| `mis_warning` | an MIS position is still open at or after `at` (default 15:05 IST) | once per trading day |
 
-## Quotes
+## The NSE clock
 
-- `yahoo` (default): `query1.finance.yahoo.com/v8/finance/chart/<TICKER>`, an
-  unofficial free JSON endpoint, one request per ticker, half a second apart.
-- `stooq`: `stooq.com/q/l/?s=aapl.us&f=sd2t2ohlcv&h&e=csv`, Stooq's free CSV.
-  It answered 404 when this was written (2026-10-13); the parser stays for
-  when it is back. Use `--source stooq` to try it.
-- Free quotes are delayed. They are fine for alerts and for checking sizes,
-  not for timing an order. The broker's price is the one that fills.
-- If both are down, read prices from the broker connector (Alpaca
-  `get_stock_snapshot`, IBKR `get_price_snapshot`) and write them into
-  `trader/prices.json` as `{"as_of": "...", "prices": {"AAPL": 341.27}}`.
-
-## The NYSE clock
-
-Regular session 9:30 a.m. to 4:00 p.m. New York time, closed on weekends and
-on these holidays, from nyse.com/markets/hours-calendars (read 2026-10-13):
-
-- 2026: Jan 1, Jan 19, Feb 16, Apr 3 (Good Friday), May 25, Jun 19, Jul 3
-  (Independence Day observed), Sep 7, Nov 26, Dec 25. Early close 1:00 p.m. on
-  Nov 27 and Dec 24.
-- 2027: Jan 1, Jan 18, Feb 15, Mar 26 (Good Friday), May 31, Jun 18
-  (Juneteenth observed), Jul 5 (Independence Day observed), Sep 6, Nov 25,
-  Dec 24 (Christmas observed). Early close 1:00 p.m. on Nov 26.
-
-Daylight saving time is worked out in the tool, so it needs no time zone
-files. For any other year it says the holiday list is unknown.
+Pre-open 09:00 to 09:15 and the normal session 09:15 to 15:30 IST, Monday to
+Friday. NSE is closed on weekends and its trading holidays. The 2026 list is
+built in (from NSE's holiday master, read 2026-10-26). `holidays refresh`
+saves NSE's current list. If NSE blocks the request, open the URL it prints
+in a browser, save the page, and run `holidays refresh --file <saved file>`.
+For a year with no list loaded, `clock` says so: run the refresh once NSE
+publishes the new year. Zerodha squares MIS positions off from about 15:20.
+Muhurat trading on Diwali is not modelled.
 
 ## Steps
 
-1. Ask what to watch, in the user's words ("tell me if Apple drops under
-   $320"), and add the rule. Confirm it back: ticker, type, level.
-2. Run `check` now, and on a schedule if the user wants (a Claude scheduled
-   task or cron, every 15 minutes in market hours is plenty). Each run fetches
-   only the tickers in the rules and rings each alert once.
+1. Ask what to watch, in the user's words ("tell me if Infosys drops under
+   1,550"), and add the rule. Confirm it back: symbol, type, level in rupees.
+2. Refresh the Kite snapshots (above) and run `check`. Run it again on a
+   schedule if the user wants: every 15 minutes in market hours is plenty.
 3. Tell the user what rang in one line each. If they want to act, send them
    to sizing and `/trader-risk`. Never act for them.
 
-## Example: the reel's portfolio
+## Example
 
-After the copy portfolio is bought, `add --opening-bell`, `add --symbol AAPL
---above 350`, and `add --symbol BAC --stop 50`. On 2026-10-13 AAPL closed at
-$341.27 and BAC at $53.96, so `check` that evening prints "Nothing hit" and
-exits 1. At 9:30 the next morning the opening bell rings once.
+With the rules in `alerts.example.json`, a check at 15:30 IST on 2026-10-26
+with INFY at Rs 1,612.50 and RELIANCE at Rs 1,402.30 rings nothing: INFY is
+under 1,700 and RELIANCE is over its 1,350 stop. At 09:15 the next trading
+day the opening bell rings once. On a day with an open MIS position, the MIS
+warning rings once at 15:05.
 
 ## What it never does
 
-It never places, cancels or changes an order, never claims a quote is
-real time, and never predicts where a price is going.
+It never places, cancels or changes an order, never makes up a price, and
+never predicts where a price is going.
 
 ## Safety
 
 - Education and tooling, not financial advice. An alert is a fact about a price, not a signal to trade.
-- Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
-- Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
-  user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
-  (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
-- No options, margin, short selling or leverage unless the config allows it and the user confirms.
-- Broker keys live in environment variables or the Claude Desktop config, never in the chat.
+- Every order in this pack is a LIVE order with real money: Kite has no paper account.
+- Nothing in this pack places an order except through trader-broker, and only when all three hold:
+  trader-risk passed that exact order, the user typed an explicit yes for that one order in the chat,
+  and the user approved the Kite connector's order card because its order tool is set to "Needs
+  approval". Never set an order tool to "Always allow".
+- No F&O, no margin products other than MIS when the config allows it, and no short selling unless the
+  config allows it and the user confirms.
+- Kite logins live in the connector, never in the chat or in files.

@@ -39,5 +39,5 @@ Paper trading is the default, and options, margin and shorts are off. Never bypa
 
 ## Scope and fork notes
 
-- The pack is US-only today: SEC EDGAR, NYSE calendar (2026/2027 holidays in `trader-alerts`), Alpaca/IBKR. Indian market (NSE/BSE, Zerodha Kite) support is planned and does not exist yet. Treat it as new code rather than assuming the US data sources apply.
+- The pack is being converted to India: see `docs/superpowers/specs/2026-10-26-indian-market-design.md` and the plans in `docs/superpowers/plans/`. trader-alerts is converted (NSE clock, Kite quotes, `kite_snapshot.py`, `nse.py`, `nse_calendar.py`, `nse_symbols.py`). The other skills are still US until their phase lands. Shared helpers are copied into each skill that needs them and must stay byte-identical (`test_shared_helpers_are_identical`).
 - This is a fork (`origin` = `sisoppin/trader-skill`). README, `plugin.json` and `test_repo.py` still hardcode `Jakeschincariol/trader-skill`, and a rebrand to sisoppin is planned. When rebranding, change README, `plugin.json`/`marketplace.json` and the `test_readme_carries_the_reel_copy` strings together.

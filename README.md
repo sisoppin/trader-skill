@@ -63,7 +63,7 @@ environment variable.
 | `/trader-risk` | Risk Manager | Checks every proposed order against your limits and blocks anything over them. |
 | `/trader-broker` | Order Executor | Turns an approved order into the exact ticket your brokerage connector receives, and records your yes. It never places anything itself. |
 | `/trader-tax` | Tax Optimizer | Tracks cost-basis lots, gains and losses, tax-loss harvesting candidates and wash sales. |
-| `/trader-alerts` | Price Alerts | Rings when a price target, a stop or the opening bell hits, with the real NYSE calendar. |
+| `/trader-alerts` | Price Alerts | Rings when a price target, a stop, the opening bell or the MIS square-off hits, with the real NSE calendar and Kite quotes. |
 | `/trader-rebalance` | Rebalancer | Brings the portfolio back to its target weights when it drifts past your band. |
 
 ## How to use it
@@ -122,7 +122,7 @@ python3 trader-budget/size.py --budget 5000 --write                    # -> trad
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
 python3 trader-tax/lots.py harvest --min-loss 100                      # with wash-sale checks
-python3 trader-alerts/alerts.py clock                                  # NYSE open or closed
+python3 trader-alerts/alerts.py clock                                  # NSE open or closed
 python3 trader-rebalance/rebalance.py --band 5                         # the drift table
 ```
 

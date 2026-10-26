@@ -13,6 +13,8 @@ ABOUT = ("11 Claude skills that copy the investors you trust, watch the news and
 # skills that can lead to an order carry the safety block
 ORDER_PATH = ["trader-copycat", "trader-budget", "trader-pelosi", "trader-risk", "trader-broker",
               "trader-tax", "trader-alerts", "trader-rebalance"]
+# helper modules copied into several skills; every copy must be the same bytes
+SHARED = ["kite_snapshot.py", "nse.py", "nse_calendar.py", "nse_symbols.py"]
 
 
 def frontmatter(path):
@@ -93,6 +95,23 @@ class Repo(unittest.TestCase):
             cfg = json.load(fh)
         self.assertIs(cfg["paper"], True)
         self.assertIs(cfg.get("allow_options", False), False)
+
+    def test_shared_helpers_are_identical(self):
+        for name in SHARED:
+            copies = [os.path.join(ROOT, s, name) for s in SKILLS if os.path.isfile(os.path.join(ROOT, s, name))]
+            self.assertTrue(copies, "%s exists in no skill" % name)
+            texts = set()
+            for p in copies:
+                with open(p, "rb") as fh:
+                    texts.add(fh.read())
+            self.assertEqual(len(texts), 1, "copies of %s differ: %s" % (name, copies))
+
+    def test_alerts_example_rules_are_nse(self):
+        with open(os.path.join(ROOT, "trader-alerts", "alerts.example.json")) as fh:
+            rules = json.load(fh)["rules"]
+        syms = {r["symbol"] for r in rules if "symbol" in r}
+        self.assertEqual(syms, {"INFY", "RELIANCE", "TCS", "HDFCBANK"})
+        self.assertIn("mis_warning", {r["type"] for r in rules})
 
 
 if __name__ == "__main__":
