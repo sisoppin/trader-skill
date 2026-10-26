@@ -232,6 +232,49 @@ class HarvestSafety(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("could not check the lots", text)
 
+    def test_headroom_used_up_by_a_loss_sale_never_gives_a_negative_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            argv = abc_inputs(d, [("2024-01-02", 1000, 100), ("2026-06-01", 1000, 600)], 300)
+            with open(os.path.join(d, "tb.csv"), "a") as fh:
+                fh.write("XYZ,INE000A01011,2024-01-02,NSE,EQ,EQ,buy,false,10.000000,100.000000,TX,OX,"
+                         "2024-01-02T10:00:00\n")
+            for name, row in (("quotes", None), ("holdings", None)):
+                path = os.path.join(d, "kite", name + ".json")
+                with open(path) as fh:
+                    doc = json.load(fh)
+                if name == "quotes":
+                    doc["data"]["NSE:XYZ"] = {"last_price": 200}
+                else:
+                    doc["data"].append({"tradingsymbol": "XYZ", "exchange": "NSE", "quantity": 10,
+                                        "t1_quantity": 0, "last_price": 200})
+                with open(path, "w") as fh:
+                    json.dump(doc, fh)
+            out = os.path.join(d, "orders.json")
+            _, text, _ = run(["harvest", "--min-loss", "500", "--include-gains", "--write", out] + argv)
+            orders = []
+            if os.path.exists(out):
+                with open(out) as fh:
+                    orders = json.load(fh)["orders"]
+        self.assertTrue(all(int(o["quantity"]) >= 1 for o in orders), orders)
+        self.assertNotIn("XYZ", [o["tradingsymbol"] for o in orders])
+        self.assertNotIn("SELL -", text)
+
+    def test_a_refused_write_removes_the_old_orders_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "orders.json")
+            with open(out, "w") as fh:
+                fh.write("{}")
+            code, _, err = run(["harvest", "--write", out] + abc_inputs(d, [("2026-06-01", 10, 2500)], 1500,
+                                                                         holdings=False))
+            self.assertEqual(code, 1)
+            self.assertIn("needs a fresh Kite holdings snapshot", err)
+            self.assertFalse(os.path.exists(out))
+
+    def test_break_even_is_not_a_loss(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, text, _ = run(["harvest", "--min-loss", "0", "--json"] + abc_inputs(d, [("2026-06-01", 10, 1500)], 1500))
+        self.assertEqual(json.loads(text)["losses"], [])
+
     def test_a_negative_min_loss_is_refused(self):
         code, _, err = run(["harvest", "--min-loss", "-1"] + args())
         self.assertEqual(code, 1)

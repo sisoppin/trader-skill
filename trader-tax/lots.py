@@ -251,13 +251,16 @@ def harvest(lots, prices, today, years, min_loss, fmv=None, exemption=125000.0, 
         qty = sum(l["qty"] for l in lots[sym])
         res, _ = ledger.what_if(lots[sym], qty, prices[sym], today, fmv)
         net = sum(g["gain"] for g in res)
-        if net <= -min_loss:
+        if net < 0 and -net >= min_loss:
             by_term = {k: round(sum(g["gain"] for g in res if g["kind"] == k), 2) for k in ("STCG", "LTCG")}
             losses.append({"symbol": sym, "qty": qty, "price": prices[sym], "loss": round(-net, 2),
                            "by_term": by_term})
             left -= max(0.0, by_term["LTCG"])
+    left = max(0.0, left)
     taken = set(c["symbol"] for c in losses)
     for sym in sorted(lots):
+        if left <= 0:
+            break
         if sym not in prices or sym in skip or sym in taken:
             continue
         n, booked = 0, 0.0
@@ -267,11 +270,12 @@ def harvest(lots, prices, today, years, min_loss, fmv=None, exemption=125000.0, 
                 break
             per = g["gain"] / lot["qty"]
             fit = min(lot["qty"], int((left - booked) // per)) if per > 0 else 0
-            n += fit
-            booked += fit * per
+            if fit > 0:
+                n += fit
+                booked += fit * per
             if fit < lot["qty"]:
                 break
-        if n:
+        if n > 0:
             gains.append({"symbol": sym, "qty": n, "price": prices[sym], "gain": round(booked, 2)})
             left -= booked
     return losses, gains
@@ -287,6 +291,8 @@ def sell_orders(cands, lots, today, fmv, cfg, kind, min_loss, notes):
     out = []
     for c in cands:
         sym, qty = c["symbol"], c["qty"]
+        if qty < 1:
+            continue
         if max_value and qty * c["price"] > max_value:
             qty = int(max_value // c["price"])
             if qty < 1:
@@ -324,6 +330,8 @@ def cmd_harvest(a):
     today = _today(a)
     _, bad, hold_err = holdings_check(book["lots"], a.kite_dir, _now(a))
     if a.write and hold_err:
+        if os.path.exists(a.write):
+            os.remove(a.write)
         raise TaxError("harvest --write needs a fresh Kite holdings snapshot to check the lots "
                        "(refresh it with kite_snapshot.py save holdings)")
     notes = inp["notes"] + (["could not check the lots against Kite holdings (%s)" % hold_err] if hold_err else [])
