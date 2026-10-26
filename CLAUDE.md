@@ -9,7 +9,7 @@ A Claude Code plugin: 11 `trader-*/` skill folders, each a `SKILL.md` plus a std
 - All tests (offline, under 1s): `python3 -m unittest discover -s tests -v`
 - One file: `python3 -m unittest discover -s tests -p test_risk.py -v`
 - One test: `cd tests && python3 -m unittest test_repo.Repo.test_root_matches_the_reel`
-- Lint: `ruff check --select F,E9 --target-version py38 .` (bugs only; the code uses `%` formatting on purpose, so don't apply ruff's default/UP rules). Don't add a pyproject.toml/ruff.toml: the root allowlist test forbids it.
+- Lint: `ruff check --select F,E9 --target-version py38 --no-cache .` (bugs only; the code uses `%` formatting on purpose, so don't apply ruff's default/UP rules). Don't add a pyproject.toml/ruff.toml, and keep `--no-cache`: the root allowlist test forbids new root entries.
 - Tests load scripts by path through `tests/_load.py` `load(folder, name)` because folder names have hyphens. Put fixtures in `tests/fixtures/<skill>/` and send outputs to a `tempfile.TemporaryDirectory`. Never hit the network in tests.
 - Don't run the tools from the repo root. They create `trader/` there, which fails `test_root_matches_the_reel`.
 
