@@ -161,6 +161,14 @@ class ReviewFixes(unittest.TestCase):
         self.assertEqual(sorted(q), ["INFY"])
         self.assertEqual(q["INFY"]["quote_time"], "2026-10-26 15:29:58")
 
+    def test_non_finite_values_are_not_prices(self):
+        q = ks.quotes({"NSE:INFY": {"last_price": float("nan")},
+                       "NSE:TCS": {"last_price": 3000, "upper_circuit_limit": float("nan"),
+                                   "lower_circuit_limit": float("inf")}})
+        self.assertEqual(sorted(q), ["TCS"])
+        self.assertIsNone(q["TCS"]["upper_circuit"])
+        self.assertIsNone(q["TCS"]["lower_circuit"])
+
 
 if __name__ == "__main__":
     unittest.main()

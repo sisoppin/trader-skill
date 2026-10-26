@@ -70,6 +70,8 @@ refused, and any rule that needs a refused snapshot BLOCKS the order.
   daily loss stop.
 - duplicates and `max_orders_per_day`, counting Kite's order book.
 
+The switches must be JSON true or false without quotes, and every order needs `est_charges` from trader-budget.
+
 ## Steps
 
 1. Refresh the five Kite snapshots.

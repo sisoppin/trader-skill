@@ -8,7 +8,8 @@ and the Kite snapshots Claude saved just before (trader/kite/: quotes,
 holdings, positions, margins, orders), and gives each order PASS or BLOCK
 with the reasons. Orders are checked in file order as if each PASS had
 filled, so buys that are fine one by one but break the cash buffer together
-are caught. Sale proceeds are not counted as cash on the same day.
+are caught. Sale proceeds are not counted as cash on the same day, and a sell gets no credit for a buy
+earlier in the same batch: shorts and new positions are judged on the snapshots alone.
 
     python3 check.py                       # the trader/ files, writes trader/state/risk.json
     python3 check.py --orders trader/orders.json --json
@@ -27,7 +28,8 @@ What blocks an order:
   hours        outside 09:15 to 15:30 IST on an NSE trading day, unless
                "allow_amo" is true and the order is variety amo; any day
                in a year whose NSE holiday list is not loaded
-  price        no fresh Kite quote; MARKET while "allow_market_orders" is
+  price        no fresh Kite quote; a quote without circuit limits (use the full
+               quotes call); an order without est_charges (trader-budget writes it); MARKET while "allow_market_orders" is
                false; a LIMIT price more than "max_limit_deviation_pct"
                from the last price; a price outside today's circuit band
   size         under "min_order_value" or over "max_order_value" (rupees)
@@ -150,11 +152,24 @@ def config(cfg):
             raise RiskError("config %s must be true or false without quotes, got %r" % (k, c[k]))
     if not isinstance(c["blocked"], list):
         raise RiskError("config blocked must be a list of symbols, like [\"INFY\"]")
+    names = []
+    for b in c["blocked"]:
+        n = str(b).strip().upper()
+        if n.startswith("NSE:"):
+            n = n[4:]
+        if n.endswith(".NS"):
+            n = n[:-3]
+        if not n or ":" in n:
+            raise RiskError("config blocked entries must be NSE symbols like INFY, got %r" % (b,))
+        names.append(n)
+    c["blocked"] = names
     for k in NUMBERS:
         v = _f(c[k])
         if v is None or v < 0:
             raise RiskError("config %s must be a number of at least 0, got %r" % (k, c[k]))
         c[k] = v
+    if c["max_orders_per_day"] != int(c["max_orders_per_day"]):
+        raise RiskError("config max_orders_per_day must be a whole number, got %r" % (c["max_orders_per_day"],))
     try:
         c["mis_cutoff"] = datetime.datetime.strptime(str(c["mis_cutoff"]), "%H:%M").time()
     except ValueError:
@@ -251,7 +266,7 @@ def validated(data):
         ok = isinstance(p, dict)
         for k in ("net", "day"):
             v = p.get(k) if ok else None
-            ok = ok and (v is None or (isinstance(v, list) and all(isinstance(r, dict) for r in v)))
+            ok = ok and (isinstance(v, list) and all(isinstance(r, dict) for r in v))
         if not ok:
             bad("positions", "is not a dict of net and day lists")
     o = d.get("orders")
@@ -272,7 +287,11 @@ def check(orders, cfg, data, now, cal):
     data = validated(data)
     acct = account(data)
     quotes, quote_err = _need(data, "quotes")
-    blocked = {str(b).strip().upper() for b in c.get("blocked") or []}
+    blocked = set(c["blocked"])
+    # sells never get credit for earlier orders of this batch: shorts and "opening" are judged on the snapshot
+    snap_mis = dict(acct["mis_net"]) if acct["mis_net"] is not None else None
+    snap_held = dict(acct["held"]) if acct["held"] is not None else None
+    sold_cnc = {}
     seen, results = set(), []
 
     for i, o in enumerate(orders, 1):
@@ -313,6 +332,11 @@ def check(orders, cfg, data, now, cal):
             reasons.append("format: %s (stop-loss) orders are not supported by this pack" % typ)
         elif typ not in ("LIMIT", "MARKET"):
             reasons.append("format: order_type must be LIMIT or MARKET, got %r" % o.get("order_type"))
+        ec = o.get("est_charges")
+        est_charges = _f(ec) if not isinstance(ec, bool) else None
+        if est_charges is None or est_charges < 0:
+            reasons.append("format: est_charges must be a rupee amount of at least 0 (trader-budget writes it)")
+            est_charges = 0.0
         if typ == "LIMIT" and not (price and price > 0):
             reasons.append("format: a LIMIT order needs a price above 0")
         if str(o.get("validity") or "DAY").strip().upper() != "DAY":
@@ -357,11 +381,10 @@ def check(orders, cfg, data, now, cal):
         if q and ref:
             lo, hi = q.get("lower_circuit"), q.get("upper_circuit")
             if lo is None or hi is None:
-                warns.append("the Kite quote has no circuit limits for %s" % sym)
+                reasons.append("data: the Kite quote for NSE:%s has no circuit limits; use the full quotes call" % sym)
             elif ref < lo - PAISA or ref > hi + PAISA:
                 reasons.append("price: %s is outside today's circuit band %s to %s" % (inr(ref), inr(lo), inr(hi)))
         value = qty * ref if (qty and ref) else None
-        est_charges = _f(o.get("est_charges")) or 0.0
 
         # size
         if value is not None:
@@ -392,13 +415,13 @@ def check(orders, cfg, data, now, cal):
                                       _pct(c["max_position_pct"])))
         if product == "CNC" and side == "SELL" and qty:
             if need("holdings") and need("positions"):
-                have = acct["held"].get(sym, 0)
+                have = snap_held.get(sym, 0) - sold_cnc.get(sym, 0)
                 if qty > have + 1e-9:
                     reasons.append("short: selling %d %s but you hold %d; a delivery sale needs the shares"
                                    % (qty, sym, int(have)))
         if product == "MIS" and side in ("BUY", "SELL") and qty:
             if need("positions") and need("margins"):
-                net = acct["mis_net"].get(sym, 0)
+                net = snap_mis.get(sym, 0)
                 after_net = net + (qty if side == "BUY" else -qty)
                 opening = abs(after_net) > abs(net) or after_net * net < 0
                 if side == "SELL" and after_net < 0 and not c["allow_short"]:
@@ -438,6 +461,7 @@ def check(orders, cfg, data, now, cal):
                 acct["held"][sym] = acct["held"].get(sym, 0) + qty
             elif product == "CNC":
                 acct["held"][sym] = acct["held"].get(sym, 0) - qty
+                sold_cnc[sym] = sold_cnc.get(sym, 0) + qty
                 acct["held_value"][sym] = max(acct["held_value"].get(sym, 0.0) - value, 0.0)
             else:
                 acct["mis_net"][sym] = acct["mis_net"].get(sym, 0) + (qty if side == "BUY" else -qty)
@@ -508,7 +532,7 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     try:
-        if not a.no_write and os.path.exists(a.out):
+        if os.path.exists(a.out):
             os.remove(a.out)  # a crash or error must never leave an earlier PASS on disk
         doc = read_json(a.orders, "orders file (run trader-budget first)")
         orders = doc.get("orders", doc) if isinstance(doc, dict) else doc

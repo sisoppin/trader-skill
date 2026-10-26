@@ -22,6 +22,7 @@ identical: tests/test_repo.py checks.
 import argparse
 import datetime
 import json
+import math
 import os
 import sys
 import time
@@ -120,9 +121,10 @@ def load(kind, d=DIR, now=None, max_age=None):
 
 def _f(x):
     try:
-        return None if x is None else float(x)
+        v = None if x is None else float(x)
     except (TypeError, ValueError):
         return None
+    return v if v is not None and math.isfinite(v) else None
 
 
 def quotes(data):

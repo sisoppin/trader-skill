@@ -43,10 +43,15 @@ def data(now=NOW, **over):
     return d
 
 
+MISSING = object()
+
+
 def order(sym="INFY", side="BUY", qty="6", price="1612.50", product="CNC", **over):
     o = {"exchange": "NSE", "tradingsymbol": sym, "transaction_type": side, "quantity": qty, "product": product,
-         "order_type": "LIMIT", "price": price, "validity": "DAY", "variety": "regular"}
+         "order_type": "LIMIT", "price": price, "validity": "DAY", "variety": "regular",
+         "est_charges": "0.00"}
     o.update(over)
+    o = {k: v for k, v in o.items() if v is not MISSING}
     return o
 
 
@@ -346,6 +351,64 @@ class FailOpen(unittest.TestCase):
                 rc = check.main(["--orders", os.path.join(d, "none.json"), "--config", CFG_PATH,
                                  "--kite-dir", KDIR, "--holidays", os.path.join(d, "h.json"), "--out", out])
             self.assertEqual(rc, 1)
+            self.assertFalse(os.path.exists(out))
+
+
+class FinalReview(unittest.TestCase):
+    def test_no_same_batch_credit_for_a_short_sale(self):
+        on = cfg(allow_mis=True)
+        res = run_check([order(product="MIS", qty="5"), order(product="MIS", side="SELL", qty="5")], on)
+        self.assertEqual(verdicts(res), ["PASS", "BLOCK"])
+        self.assertIn("short:", why(res, 1))
+
+    def test_same_batch_buy_is_not_held_for_a_delivery_sale(self):
+        res = run_check([order("RELIANCE", qty="1", price="1402.30"),
+                         order("RELIANCE", "SELL", "3", "1402.30")])
+        self.assertEqual(verdicts(res)[1], "BLOCK")
+        self.assertIn("short:", why(res, 1))
+
+    def test_blocked_list_is_normalised(self):
+        for entry in ("NSE:INFY", "infy.ns", " Infy "):
+            self.assertIn("blocked: INFY", why(run_check([order()], cfg(blocked=[entry]))), entry)
+        with self.assertRaises(check.RiskError):
+            run_check([order()], cfg(blocked=["BSE:INFY"]))
+
+    def test_nan_price_and_missing_circuits(self):
+        raw = {"NSE:INFY": {"last_price": float("nan"), "upper_circuit_limit": 1773.75,
+                            "lower_circuit_limit": 1451.25}}
+        res = run_check([order()], d=data(quotes=check.kite_snapshot.quotes(raw)))
+        self.assertIn("data: no fresh Kite quote", why(res))
+        raw = {"NSE:INFY": {"last_price": 1612.5}}
+        res = run_check([order()], d=data(quotes=check.kite_snapshot.quotes(raw)))
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("data: the Kite quote for NSE:INFY has no circuit limits; use the full quotes call",
+                      why(res))
+
+    def test_orders_per_day_is_a_whole_number(self):
+        with self.assertRaises(check.RiskError):
+            run_check([order()], cfg(max_orders_per_day=0.5))
+
+    def test_positions_need_net_and_day(self):
+        for pos in ({"net": []}, {"day": []}):
+            res = run_check([order()], d=data(positions=pos))
+            self.assertIn("data: the positions snapshot", why(res))
+
+    def test_est_charges_are_required(self):
+        for bad in (MISSING, "-1", "abc", None, True):
+            res = run_check([order(est_charges=bad)])
+            self.assertEqual(verdicts(res), ["BLOCK"], bad)
+            self.assertIn("format: est_charges must be a rupee amount of at least 0 (trader-budget writes it)",
+                          why(res), bad)
+
+    def test_no_write_removes_an_old_pass(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "risk.json")
+            with open(out, "w") as fh:
+                fh.write('{"block": 0}')
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                check.main(["--orders", ORDERS_PATH, "--config", CFG_PATH, "--kite-dir", KDIR,
+                            "--holidays", os.path.join(d, "h.json"), "--now", "2026-10-26T10:01",
+                            "--out", out, "--no-write"])
             self.assertFalse(os.path.exists(out))
 
 
