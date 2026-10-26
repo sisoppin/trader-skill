@@ -139,6 +139,105 @@ class Harvest(unittest.TestCase):
         self.assertEqual([r["verdict"] for r in res["results"]], ["PASS"], res["results"])
 
 
+HEAD = ("symbol,isin,trade_date,exchange,segment,series,trade_type,auction,quantity,price,trade_id,order_id,"
+        "order_execution_time\n")
+
+
+def abc_inputs(d, buys, price, held=None, holdings=True):
+    """Temp tradebook + kite dir for one symbol ABC: buys is [(date, qty, price)]. Returns the common args."""
+    tb = os.path.join(d, "tb.csv")
+    with open(tb, "w") as fh:
+        fh.write(HEAD)
+        for i, (day, qty, cost) in enumerate(buys):
+            fh.write("ABC,INE000A01010,%s,NSE,EQ,EQ,buy,false,%d.000000,%.6f,T%d,O%d,%sT10:00:00\n"
+                     % (day, qty, cost, i, i, day))
+    kd = os.path.join(d, "kite")
+    os.makedirs(kd)
+    stamp = "2026-10-26T10:00:00+05:30"
+    with open(os.path.join(kd, "quotes.json"), "w") as fh:
+        json.dump({"fetched_at": stamp, "data": {"NSE:ABC": {"last_price": price}}}, fh)
+    with open(os.path.join(kd, "trades.json"), "w") as fh:
+        json.dump({"fetched_at": stamp, "data": []}, fh)
+    if holdings:
+        qty = held if held is not None else sum(b[1] for b in buys)
+        with open(os.path.join(kd, "holdings.json"), "w") as fh:
+            json.dump({"fetched_at": stamp, "data": [{"tradingsymbol": "ABC", "exchange": "NSE", "quantity": qty,
+                                                      "t1_quantity": 0, "last_price": price}]}, fh)
+    return ["--tradebook", tb, "--lots", os.path.join(d, "none.csv"), "--fmv", os.path.join(d, "none2.csv"),
+            "--kite-dir", kd, "--config", CFG, "--now", NOW]
+
+
+class HarvestSafety(unittest.TestCase):
+    def harvest(self, buys, price, extra=(), **kw):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "orders.json")
+            code, text, err = run(["harvest", "--min-loss", "500", "--write", out] + list(extra)
+                                  + abc_inputs(d, buys, price, **kw))
+            orders = None
+            if os.path.exists(out):
+                with open(out) as fh:
+                    orders = json.load(fh)["orders"]
+        return code, text, err, orders
+
+    def test_a_cut_order_that_would_book_a_gain_is_not_proposed(self):
+        _, text, _, orders = self.harvest([("2024-01-02", 10, 1000), ("2026-06-01", 10, 2500)], 1500)
+        self.assertIsNone(orders)
+        self.assertIn("ABC: selling only 6 of 20", text)
+        self.assertIn("would book a gain", text)
+
+    def test_a_cut_order_states_the_real_loss(self):
+        _, text, _, orders = self.harvest([("2026-06-01", 10, 2500)], 1500)
+        self.assertEqual([(o["quantity"], o["why"]) for o in orders],
+                         [("6", "book a Rs 6,000 loss (trader-tax harvest)")])
+        self.assertIn("Proposed LIVE orders:", text)
+        self.assertIn("book a Rs 6,000 loss", text)
+
+    def test_one_share_dearer_than_the_max_order(self):
+        _, text, _, orders = self.harvest([("2026-06-01", 10, 25000)], 12000)
+        self.assertIsNone(orders)
+        self.assertIn("ABC: one share costs more than your max order; not proposed", text)
+        self.assertNotIn("selling 0 of", text)
+
+    def test_one_symbol_never_gets_a_loss_and_a_gain_sell(self):
+        _, _, _, orders = self.harvest([("2024-01-02", 10, 100), ("2026-06-01", 10, 300)], 150,
+                                       extra=["--include-gains"])
+        self.assertEqual([(o["tradingsymbol"], o["quantity"]) for o in orders], [("ABC", "20")])
+
+    def test_nothing_to_propose_removes_the_old_orders_file(self):
+        for extra in ([], ["--json"]):
+            with tempfile.TemporaryDirectory() as d:
+                out = os.path.join(d, "orders.json")
+                with open(out, "w") as fh:
+                    fh.write("{}")
+                _, text, _ = run(["harvest", "--min-loss", "99999", "--write", out] + extra
+                                 + abc_inputs(d, [("2026-06-01", 10, 2500)], 1500))
+                self.assertFalse(os.path.exists(out))
+                if not extra:
+                    self.assertIn("Removed the old %s: nothing to propose." % out, text)
+
+    def test_lots_that_do_not_match_kite_are_skipped(self):
+        _, text, _, orders = self.harvest([("2026-06-01", 20, 2500)], 1500, held=35)
+        self.assertIsNone(orders)
+        self.assertIn("ABC skipped: the trades give 20 shares but Kite holds 35, so the oldest-first tax "
+                      "figures would be wrong", text)
+        self.assertNotIn("SELL 20 ABC", text)
+
+    def test_write_needs_a_fresh_holdings_snapshot(self):
+        _, _, err, orders = self.harvest([("2026-06-01", 10, 2500)], 1500, holdings=False)
+        self.assertIn("needs a fresh Kite holdings snapshot", err)
+        self.assertIsNone(orders)
+        with tempfile.TemporaryDirectory() as d:
+            code, text, _ = run(["harvest", "--min-loss", "500"] + abc_inputs(d, [("2026-06-01", 10, 2500)], 1500,
+                                                                              holdings=False))
+        self.assertEqual(code, 0)
+        self.assertIn("could not check the lots", text)
+
+    def test_a_negative_min_loss_is_refused(self):
+        code, _, err = run(["harvest", "--min-loss", "-1"] + args())
+        self.assertEqual(code, 1)
+        self.assertIn("--min-loss", err)
+
+
 class Inputs(unittest.TestCase):
     def test_no_trades_explains_where_to_get_them(self):
         with tempfile.TemporaryDirectory() as d:
