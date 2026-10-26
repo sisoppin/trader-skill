@@ -220,8 +220,10 @@ class Data(unittest.TestCase):
 
     def test_a_missing_snapshot_only_blocks_the_rules_that_need_it(self):
         d = data(positions="no positions snapshot in trader/kite: call the Kite connector for positions")
-        self.assertEqual(verdicts(run_check([order()], d=d)), ["PASS"])
+        self.assertIn("data: no positions snapshot", why(run_check([order()], d=d)))
         self.assertIn("data: no positions snapshot", why(run_check([order(product="MIS")], cfg(allow_mis=True), d)))
+        d = data(margins="no margins snapshot in trader/kite: call the Kite connector for margins")
+        self.assertEqual(verdicts(run_check([order("RELIANCE", "SELL", "2", "1402.30")], d=d)), ["PASS"])
 
     def test_a_us_shaped_order_is_blocked_not_crashed(self):
         us = {"symbol": "AAPL", "side": "buy", "notional": "1250", "type": "market", "time_in_force": "day"}
@@ -276,6 +278,75 @@ class Cli(unittest.TestCase):
             code, _, err = self.run_main(["--orders", os.path.join(d, "none.json")] + base)
             self.assertEqual(code, 1)
             self.assertIn("no orders file", err)
+
+
+class FailOpen(unittest.TestCase):
+    def test_switches_must_be_real_booleans(self):
+        for k, v in (("allow_mis", "false"), ("allow_market_orders", "no"), ("allow_short", 0), ("allow_amo", None)):
+            with self.assertRaises(check.RiskError, msg=k):
+                run_check([order()], cfg(**{k: v}))
+        try:
+            run_check([order()], cfg(allow_mis="false"))
+        except check.RiskError as e:
+            self.assertIn("config allow_mis must be true or false without quotes, got 'false'", str(e))
+
+    def test_numbers_must_be_finite_and_zero_warns(self):
+        with self.assertRaises(check.RiskError):
+            run_check([order()], cfg(max_order_value="nan"))
+        with self.assertRaises(check.RiskError):
+            run_check([order()], cfg(cash_buffer_pct="inf"))
+        res = run_check([order(qty="10")], cfg(max_order_value="0", max_position_pct="50"))
+        self.assertEqual(verdicts(res), ["PASS"], why(res))
+        self.assertIn("max_order_value is 0: no per-order cap", res["warnings"])
+        res = run_check([order()], cfg(max_orders_per_day=0, daily_loss_limit="0"))
+        self.assertIn("max_orders_per_day is 0: no daily order limit", res["warnings"])
+        self.assertIn("daily_loss_limit is 0: no daily loss limit", res["warnings"])
+
+    def test_bad_snapshot_shapes_block(self):
+        odd = {"commodity": {"net": 1.0}}
+        self.assertIn("data: the margins snapshot", why(run_check([order()], d=data(margins=odd))))
+        self.assertIn("data: the margins snapshot", why(run_check([order(product="MIS")], cfg(allow_mis=True),
+                                                                  data(margins=odd))))
+        nonet = {"equity": {"available": {"live_balance": 5000.0}}}
+        self.assertIn("data: the margins snapshot", why(run_check([order()], d=data(margins=nonet))))
+        self.assertIn("data: the holdings snapshot",
+                      why(run_check([order("RELIANCE", "SELL", "1", "1402.30")], d=data(holdings={"x": 1}))))
+        self.assertIn("data: the positions snapshot",
+                      why(run_check([order()], d=data(positions={"net": "x", "day": []}))))
+        self.assertIn("data: the orders snapshot", why(run_check([order()], d=data(orders={"x": 1}))))
+
+    def test_non_finite_quantity_is_a_format_block(self):
+        for q in ("nan", "inf"):
+            res = run_check([order(qty=q)])
+            self.assertEqual(verdicts(res), ["BLOCK"])
+            self.assertIn("format: quantity", why(res))
+
+    def test_todays_delivery_trades_count_as_held(self):
+        pos = {"net": [{"tradingsymbol": "RELIANCE", "product": "CNC", "quantity": 10, "last_price": 1402.3}],
+               "day": []}
+        big = cfg(max_order_value="20000")
+        d = data(positions=pos)
+        self.assertEqual(verdicts(run_check([order("RELIANCE", "SELL", "12", "1402.30")], big, d)), ["PASS"])
+        res = run_check([order("RELIANCE", "SELL", "13", "1402.30")], big, d)
+        self.assertIn("you hold 12", why(res))
+        res = run_check([order("RELIANCE", qty="7", price="1402.30")], d=d)
+        self.assertIn("position: RELIANCE would be Rs 26,643.70", why(res))
+
+    def test_blocked_must_be_a_list(self):
+        with self.assertRaises(check.RiskError):
+            run_check([order()], cfg(blocked="INFY"))
+
+    def test_a_failed_run_leaves_no_earlier_pass_behind(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "risk.json")
+            with open(out, "w") as fh:
+                fh.write("{}")
+            code = io.StringIO()
+            with redirect_stdout(code), redirect_stderr(code):
+                rc = check.main(["--orders", os.path.join(d, "none.json"), "--config", CFG_PATH,
+                                 "--kite-dir", KDIR, "--holidays", os.path.join(d, "h.json"), "--out", out])
+            self.assertEqual(rc, 1)
+            self.assertFalse(os.path.exists(out))
 
 
 if __name__ == "__main__":

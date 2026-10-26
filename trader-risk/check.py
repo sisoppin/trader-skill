@@ -46,6 +46,13 @@ What blocks an order:
   data         a Kite snapshot a rule needs is missing or stale: that is a
                BLOCK, never a skipped rule
 
+A limit of 0 means off for "max_order_value", "max_orders_per_day" and
+"daily_loss_limit", and the check says so in a warning. The allow_* switches
+must be true or false without quotes, "blocked" must be a list, and a limit
+that is not a finite number is an error. A Kite snapshot of an unexpected
+shape is a data BLOCK. CNC rules read today's delivery trades from the
+positions snapshot as well as holdings, so they need both.
+
 Exit code 0 when every order passes, 1 when any order is blocked or the
 check could not run. The verdicts go to trader/state/risk.json with a
 fingerprint of each order, so trader-broker only shows an order as ready
@@ -56,6 +63,7 @@ import argparse
 import datetime
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -74,6 +82,9 @@ DEFAULTS = {
     "allow_mis": False, "mis_cutoff": "15:00", "max_mis_exposure_pct": 50, "daily_loss_limit": 2000,
     "allow_short": False, "allow_amo": False, "blocked": [],
 }
+SWITCHES = ("allow_mis", "allow_short", "allow_market_orders", "allow_amo")
+ZERO_MEANS_OFF = {"max_order_value": "no per-order cap", "max_orders_per_day": "no daily order limit",
+                  "daily_loss_limit": "no daily loss limit"}
 NUMBERS = ("cash_buffer_pct", "max_position_pct", "max_order_value", "min_order_value", "max_orders_per_day",
            "max_limit_deviation_pct", "max_mis_exposure_pct", "daily_loss_limit")
 LEGACY = ("paper", "max_order_usd", "min_order_usd", "allow_options", "allow_margin", "fractional", "broker")
@@ -109,10 +120,12 @@ def fingerprint(order):
 
 
 def _f(x):
+    """A finite number, or None."""
     try:
-        return float(x)
+        v = float(x)
     except (TypeError, ValueError):
         return None
+    return v if math.isfinite(v) else None
 
 
 def _qty(x):
@@ -132,6 +145,11 @@ def config(cfg):
     """Your rules merged over the cautious defaults, numbers parsed. Returns (rules, warnings)."""
     c = dict(DEFAULTS)
     c.update(cfg or {})
+    for k in SWITCHES:
+        if not isinstance(c[k], bool):
+            raise RiskError("config %s must be true or false without quotes, got %r" % (k, c[k]))
+    if not isinstance(c["blocked"], list):
+        raise RiskError("config blocked must be a list of symbols, like [\"INFY\"]")
     for k in NUMBERS:
         v = _f(c[k])
         if v is None or v < 0:
@@ -142,6 +160,9 @@ def config(cfg):
     except ValueError:
         raise RiskError("config mis_cutoff wants a time like 15:00, got %r" % c["mis_cutoff"])
     warnings = []
+    for k, text in ZERO_MEANS_OFF.items():
+        if c[k] == 0:
+            warnings.append("%s is 0: %s" % (k, text))
     old = [k for k in LEGACY if k in (cfg or {})]
     if old:
         warnings.append("ignored US-era config keys: %s. Kite has no paper account and every order is live; "
@@ -182,10 +203,17 @@ def account(data):
     if isinstance(p, dict):
         net, exposure = {}, 0.0
         for row in p.get("net") or []:
-            if row.get("product") != "MIS":
-                continue
             sym = str(row.get("tradingsymbol", "")).upper()
             n = _f(row.get("quantity")) or 0
+            if row.get("product") == "CNC":
+                # delivery trades made today are listed under positions, not holdings
+                if acct["held"] is not None:
+                    px = (quotes.get(sym) or {}).get("price") or _f(row.get("last_price")) or 0
+                    acct["held"][sym] = acct["held"].get(sym, 0) + n
+                    acct["held_value"][sym] = acct["held_value"].get(sym, 0.0) + n * px
+                continue
+            if row.get("product") != "MIS":
+                continue
             net[sym] = net.get(sym, 0) + n
             exposure += abs(n) * (_f(row.get("last_price")) or 0)
         acct["mis_net"], acct["mis_exposure"] = net, exposure
@@ -196,6 +224,43 @@ def account(data):
     return acct
 
 
+def _numeric(x):
+    return _f(x) is not None
+
+
+def validated(data):
+    """A copy of data where every snapshot of an unexpected shape is replaced by an error text."""
+    d = dict(data)
+
+    def bad(kind, why):
+        d[kind] = "the %s snapshot %s (Kite answer changed?)" % (kind, why)
+
+    m = d.get("margins")
+    if m is not None and not isinstance(m, str):
+        eq = m.get("equity") if isinstance(m, dict) else None
+        av = eq.get("available") if isinstance(eq, dict) else None
+        av = av if isinstance(av, dict) else {}
+        if not (_numeric(av.get("live_balance", av.get("cash"))) and _numeric((eq or {}).get("net"))):
+            bad("margins", "has no equity cash or net")
+    h = d.get("holdings")
+    if h is not None and not isinstance(h, str):
+        if not (isinstance(h, list) and all(isinstance(r, dict) for r in h)):
+            bad("holdings", "is not a list of holdings")
+    p = d.get("positions")
+    if p is not None and not isinstance(p, str):
+        ok = isinstance(p, dict)
+        for k in ("net", "day"):
+            v = p.get(k) if ok else None
+            ok = ok and (v is None or (isinstance(v, list) and all(isinstance(r, dict) for r in v)))
+        if not ok:
+            bad("positions", "is not a dict of net and day lists")
+    o = d.get("orders")
+    if o is not None and not isinstance(o, str):
+        if not (isinstance(o, list) and all(isinstance(r, dict) for r in o)):
+            bad("orders", "is not a list of orders")
+    return d
+
+
 def check(orders, cfg, data, now, cal):
     """Pure function. data maps each snapshot kind to its Kite answer (quotes already normalised by
     kite_snapshot.quotes) or to the error text that explains why it is missing. now is an aware
@@ -204,6 +269,7 @@ def check(orders, cfg, data, now, cal):
     top_warn.insert(0, "LIVE: every order here is a real-money order on your Zerodha account")
     now = now.astimezone(nse_calendar.IST)
     st = cal.status(now)
+    data = validated(data)
     acct = account(data)
     quotes, quote_err = _need(data, "quotes")
     blocked = {str(b).strip().upper() for b in c.get("blocked") or []}
@@ -307,7 +373,7 @@ def check(orders, cfg, data, now, cal):
         # the account, simulated in order
         opening = None
         if product == "CNC" and side == "BUY" and value is not None:
-            if need("margins") and need("holdings"):
+            if need("margins") and need("holdings") and need("positions"):
                 cash = acct["cash"]
                 total = cash + sum(acct["held_value"].values())
                 after = cash - value - est_charges
@@ -325,7 +391,7 @@ def check(orders, cfg, data, now, cal):
                                    % (sym, inr(pos_after), 100.0 * pos_after / total, inr(total),
                                       _pct(c["max_position_pct"])))
         if product == "CNC" and side == "SELL" and qty:
-            if need("holdings"):
+            if need("holdings") and need("positions"):
                 have = acct["held"].get(sym, 0)
                 if qty > have + 1e-9:
                     reasons.append("short: selling %d %s but you hold %d; a delivery sale needs the shares"
@@ -442,6 +508,8 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     try:
+        if not a.no_write and os.path.exists(a.out):
+            os.remove(a.out)  # a crash or error must never leave an earlier PASS on disk
         doc = read_json(a.orders, "orders file (run trader-budget first)")
         orders = doc.get("orders", doc) if isinstance(doc, dict) else doc
         if not isinstance(orders, list) or not orders:
