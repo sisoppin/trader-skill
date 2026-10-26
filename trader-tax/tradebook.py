@@ -98,9 +98,11 @@ def read_tradebook(path):
         side = r["trade_type"].upper()
         if side not in ("BUY", "SELL"):
             raise TradeError("%s: trade_type must be buy or sell, got %r" % (where, r["trade_type"]))
+        if not r["trade_id"]:
+            raise TradeError("%s: no trade_id (Console tradebooks always carry one; re-download the file)" % where)
         trades.append({"date": _date(r["trade_date"], where), "symbol": _symbol(r["symbol"], where), "side": side,
                        "qty": _qty(r["quantity"], where), "price": _price(r["price"], where),
-                       "id": r["trade_id"] or "%s:%d" % (path, i), "source": os.path.basename(path)})
+                       "id": r["trade_id"], "source": os.path.basename(path)})
     return trades, skipped
 
 
@@ -132,7 +134,7 @@ def read_lots(path):
         where = "%s line %d" % (os.path.basename(path), i)
         out.append({"date": _date(r["date"], where), "symbol": _symbol(r["symbol"], where), "side": "BUY",
                     "qty": _qty(r["quantity"], where), "price": _price(r["price"], where),
-                    "id": "lots:%d" % i, "source": os.path.basename(path)})
+                    "id": "lots:%s:%d" % (os.path.basename(path), i), "source": os.path.basename(path)})
     return out
 
 
@@ -148,13 +150,25 @@ def read_fmv(path):
     return out
 
 
+def _describe(t):
+    return "%s %d @ %.2f" % (t["side"], t["qty"], t["price"])
+
+
 def merge(*lists):
-    """All trades, each trade id once (the first source wins), in date order (stable)."""
-    seen, out = set(), []
+    """All trades in date order (stable). A trade seen again with the same id, date and symbol is a
+    duplicate and dropped (the first one wins) when side, qty and price agree; if they differ, raise."""
+    kept, out = {}, []
     for trades in lists:
         for t in trades:
-            if t["id"] in seen:
+            key = (t["id"], t["date"], t["symbol"])
+            prev = kept.get(key)
+            if prev is None:
+                kept[key] = t
+                out.append(t)
                 continue
-            seen.add(t["id"])
-            out.append(t)
+            if prev["side"] == t["side"] and prev["qty"] == t["qty"] and abs(prev["price"] - t["price"]) <= 0.01:
+                continue
+            raise TradeError("trade %s on %s (%s) appears twice with different details: %s in %s and %s in %s"
+                             % (t["id"], t["date"], t["symbol"], _describe(prev), prev["source"],
+                                _describe(t), t["source"]))
     return sorted(out, key=lambda t: t["date"])

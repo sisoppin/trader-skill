@@ -77,11 +77,67 @@ class OtherSources(unittest.TestCase):
                 tb.read_lots(write(d, "l.csv", "symbol,quantity\nINFY,1\n"))
 
     def test_merge_dedupes_by_trade_id_and_keeps_day_order(self):
-        a = [{"date": datetime.date(2026, 5, 4), "id": "T10", "side": "SELL"},
-             {"date": datetime.date(2026, 5, 4), "id": "T11", "side": "BUY"}]
-        b = [{"date": datetime.date(2026, 1, 1), "id": "T1", "side": "BUY"}, dict(a[0], side="BUY")]
-        merged = tb.merge(a, b)
+        t10 = {"date": datetime.date(2026, 5, 4), "id": "T10", "symbol": "INFY", "side": "SELL", "qty": 4,
+               "price": 1600.0, "source": "a.csv"}
+        t11 = {"date": datetime.date(2026, 5, 4), "id": "T11", "symbol": "INFY", "side": "BUY", "qty": 2,
+               "price": 1590.0, "source": "a.csv"}
+        t1 = {"date": datetime.date(2026, 1, 1), "id": "T1", "symbol": "TCS", "side": "BUY", "qty": 5,
+              "price": 3400.0, "source": "b.csv"}
+        merged = tb.merge([t10, t11], [t1, dict(t10)])
         self.assertEqual([(t["id"], t["side"]) for t in merged], [("T1", "BUY"), ("T10", "SELL"), ("T11", "BUY")])
+
+
+class Merge(unittest.TestCase):
+    def test_two_overlapping_console_files_give_12(self):
+        with tempfile.TemporaryDirectory() as d:
+            copy = os.path.join(d, "copy-of-book.csv")
+            with open(BOOK) as src, open(copy, "w") as dst:
+                dst.write(src.read())
+            a = tb.read_tradebook(BOOK)[0]
+            b = tb.read_tradebook(copy)[0]
+        self.assertEqual(len(tb.merge(a, b)), 12)
+
+    def test_same_trade_from_console_and_kite_counts_once(self):
+        trades = tb.read_tradebook(BOOK)[0]
+        kite = tb.kite_trades([{"trade_id": "T10", "exchange": "NSE", "tradingsymbol": "INFY",
+                                "transaction_type": "SELL", "quantity": 4, "average_price": 1600.0,
+                                "fill_timestamp": "2026-05-04 10:00:00"}])
+        self.assertEqual(len(tb.merge(trades, kite)), 12)
+
+    def test_same_id_and_date_with_different_details_is_an_error(self):
+        trades = tb.read_tradebook(BOOK)[0]
+        kite = tb.kite_trades([{"trade_id": "T10", "exchange": "NSE", "tradingsymbol": "INFY",
+                                "transaction_type": "SELL", "quantity": 5, "average_price": 1600.0,
+                                "fill_timestamp": "2026-05-04 10:00:00"}])
+        with self.assertRaises(tb.TradeError) as e:
+            tb.merge(trades, kite)
+        msg = str(e.exception)
+        self.assertIn("T10", msg)
+        self.assertIn("2026-05-04", msg)
+        self.assertIn("INFY", msg)
+        self.assertIn("tradebook-sample.csv", msg)
+        self.assertIn("kite", msg)
+
+    def test_same_id_on_different_dates_keeps_both(self):
+        a = [{"date": datetime.date(2026, 1, 5), "symbol": "INFY", "id": "X1", "side": "BUY", "qty": 1,
+              "price": 1500.0, "source": "a"}]
+        b = [{"date": datetime.date(2026, 1, 6), "symbol": "INFY", "id": "X1", "side": "BUY", "qty": 1,
+              "price": 1500.0, "source": "b"}]
+        self.assertEqual(len(tb.merge(a, b)), 2)
+
+    def test_blank_trade_id_is_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = write(d, "b.csv", HEADER + "TCS,,2024-03-01,NSE,EQ,EQ,buy,false,1,3400,,O1,\n")
+            with self.assertRaises(tb.TradeError) as e:
+                tb.read_tradebook(p)
+            self.assertIn("no trade_id", str(e.exception))
+            self.assertIn("b.csv line 2", str(e.exception))
+
+    def test_lots_from_two_files_give_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = write(d, "a.csv", "date,symbol,quantity,price\n2017-06-15,INFY,10,480.00\n")
+            b = write(d, "b.csv", "date,symbol,quantity,price\n2017-06-15,INFY,10,480.00\n")
+            self.assertEqual(len(tb.merge(tb.read_lots(a), tb.read_lots(b))), 2)
 
 
 if __name__ == "__main__":
