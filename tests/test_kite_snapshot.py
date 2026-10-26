@@ -45,9 +45,15 @@ class Save(unittest.TestCase):
             ks.save("quotes", {"status": "error", "message": "Incorrect api_key or access_token."}, self.d)
         self.assertIn("access_token", str(c.exception))
 
+    def test_orders_kind(self):
+        ks.save("orders", [{"order_id": "1", "status": "COMPLETE"}], self.d, now=T0)
+        self.assertEqual(ks.load("orders", self.d, now=T0 + 600 * SEC)[0]["status"], "COMPLETE")
+        with self.assertRaises(ks.SnapshotError):
+            ks.load("orders", self.d, now=T0 + 601 * SEC)
+
     def test_unknown_kind(self):
         with self.assertRaises(ks.SnapshotError):
-            ks.save("orders", {}, self.d)
+            ks.save("gtt", {}, self.d)
 
 
 class Load(unittest.TestCase):

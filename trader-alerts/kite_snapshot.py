@@ -13,7 +13,7 @@ Each file is trader/kite/<kind>.json:
     {"fetched_at": "2026-10-26T15:29:00+05:30", "data": <the Kite answer>}
 
 How old a snapshot may be before a reader refuses it: quotes 120 s;
-holdings, positions, margins and trades 600 s.
+holdings, positions, margins, orders and trades 600 s.
 
 This file is copied into every skill that reads Kite data. Keep the copies
 identical: tests/test_repo.py checks.
@@ -28,7 +28,7 @@ import time
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), "IST")
 DIR = os.path.join("trader", "kite")
-MAX_AGE = {"quotes": 120, "holdings": 600, "positions": 600, "margins": 600, "trades": 600}
+MAX_AGE = {"quotes": 120, "holdings": 600, "positions": 600, "margins": 600, "orders": 600, "trades": 600}
 SKEW = 60  # seconds a snapshot may look "from the future" before the clock is suspect
 
 

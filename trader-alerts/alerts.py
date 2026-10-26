@@ -55,29 +55,11 @@ import kite_snapshot
 import nse
 import nse_calendar
 import nse_symbols
+from rupees import inr
 
 
 class AlertError(Exception):
     pass
-
-
-# ---------------------------------------------------------------- money
-
-def inr(x):
-    """1234567.891 -> 'Rs 12,34,567.89' (Indian grouping). Whole rupees drop the paise."""
-    x = float(x)
-    whole, paise = ("%.2f" % abs(x)).split(".")
-    head, tail = whole[:-3], whole[-3:]
-    groups = []
-    while len(head) > 2:
-        groups.insert(0, head[-2:])
-        head = head[:-2]
-    if head:
-        groups.insert(0, head)
-    text = ",".join(groups + [tail])
-    if paise != "00":
-        text += "." + paise
-    return ("-Rs " if x < 0 else "Rs ") + text
 
 
 def _n(x):

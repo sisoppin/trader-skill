@@ -14,7 +14,7 @@ ABOUT = ("11 Claude skills that copy the investors you trust, watch the news and
 ORDER_PATH = ["trader-copycat", "trader-budget", "trader-pelosi", "trader-risk", "trader-broker",
               "trader-tax", "trader-alerts", "trader-rebalance"]
 # helper modules copied into several skills; every copy must be the same bytes
-SHARED = ["kite_snapshot.py", "nse.py", "nse_calendar.py", "nse_symbols.py"]
+SHARED = ["kite_snapshot.py", "nse.py", "nse_calendar.py", "nse_symbols.py", "rupees.py"]
 
 
 def frontmatter(path):
@@ -105,6 +105,19 @@ class Repo(unittest.TestCase):
                 with open(p, "rb") as fh:
                     texts.add(fh.read())
             self.assertEqual(len(texts), 1, "copies of %s differ: %s" % (name, copies))
+
+    def test_every_imported_helper_is_in_the_same_skill(self):
+        names = {n[:-3] for n in SHARED}
+        for s in SKILLS:
+            folder = os.path.join(ROOT, s)
+            for f in sorted(os.listdir(folder)):
+                if not f.endswith(".py"):
+                    continue
+                with open(os.path.join(folder, f), encoding="utf-8") as fh:
+                    used = set(re.findall(r"^(?:import|from) (\w+)", fh.read(), re.M))
+                for mod in sorted(used & names):
+                    self.assertTrue(os.path.isfile(os.path.join(folder, mod + ".py")),
+                                    "%s/%s imports %s, which is not in %s" % (s, f, mod, s))
 
     def test_alerts_example_rules_are_nse(self):
         with open(os.path.join(ROOT, "trader-alerts", "alerts.example.json")) as fh:
