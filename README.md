@@ -56,12 +56,12 @@ environment variable.
 | --- | --- | --- |
 | `/trader-copycat` | Reverse Engineer | Reads an investor's 13F-HR on SEC EDGAR and rebuilds their portfolio as weights you can copy, with what they bought, added, trimmed and sold since last quarter. |
 | `/trader-news` | News Monitor | Watches headlines and SEC filings (8-Ks) for every stock you hold and flags what touches them. |
-| `/trader-budget` | Budget Manager | Sizes every position to your budget, keeps a cash buffer and caps any one stock. |
+| `/trader-budget` | Budget Manager | Sizes every position to your rupee budget in whole NSE shares at the Kite price, keeps a cash buffer, caps any one stock and estimates Zerodha's charges. |
 | `/trader-pelosi` | Pelosi Tracker | Reads Congress's stock-trade disclosures (House PTRs) as soon as they post, turns each PDF into clean rows and alerts you once per new filing. |
 | `/trader-analyst` | Earnings Analyst | Pulls each company's reported numbers from SEC XBRL (revenue, net income, diluted EPS, margins, growth) and its latest earnings release. |
 | `/trader-screener` | Stock Screener | Screens companies against your own rules and ranks what passes. |
-| `/trader-risk` | Risk Manager | Checks every proposed order against your limits and blocks anything over them. |
-| `/trader-broker` | Order Executor | Turns an approved order into the exact ticket your brokerage connector receives, and records your yes. It never places anything itself. |
+| `/trader-risk` | Risk Manager | Checks every LIVE order against your limits and fresh Kite data (hours, price band, cash, intraday rules) and blocks anything over them. |
+| `/trader-broker` | Order Executor | Turns an approved order into the exact ticket the Kite connector receives, marked LIVE, and records your yes. It never places anything itself. |
 | `/trader-tax` | Tax Optimizer | Tracks cost-basis lots, gains and losses, tax-loss harvesting candidates and wash sales. |
 | `/trader-alerts` | Price Alerts | Rings when a price target, a stop, the opening bell or the MIS square-off hits, with the real NSE calendar and Kite quotes. |
 | `/trader-rebalance` | Rebalancer | Brings the portfolio back to its target weights when it drifts past your band. |
@@ -118,7 +118,7 @@ python3 trader-pelosi/ptr.py index --member pelosi                     # her PTR
 python3 trader-pelosi/ptr.py --help                                    # new, fetch, parse
 python3 trader-analyst/facts.py AAPL                                   # quarters, growth, EPS
 python3 trader-screener/screen.py trader/metrics.json --rules trader/rules.json
-python3 trader-budget/size.py --budget 5000 --write                    # -> trader/orders.json
+python3 trader-budget/size.py --budget 50000 --write                   # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
 python3 trader-tax/lots.py harvest --min-loss 100                      # with wash-sale checks
@@ -173,12 +173,12 @@ is not tax advice.
 ```
 trader-copycat/    SKILL.md, edgar13f.py, filers.json, share_classes.json, targets.example.json
 trader-news/       SKILL.md, news.py
-trader-budget/     SKILL.md, size.py, config.example.json, targets.example.json
+trader-budget/     SKILL.md, size.py, charges.py, config.example.json, targets.example.json
 trader-pelosi/     SKILL.md, ptr.py
 trader-analyst/    SKILL.md, facts.py, metrics.example.json
 trader-screener/   SKILL.md, screen.py, rules.example.json
 trader-risk/       SKILL.md, check.py
-trader-broker/     SKILL.md, ticket.py, claude_desktop_config.example.json
+trader-broker/     SKILL.md, ticket.py
 trader-tax/        SKILL.md, lots.py, portfolio.example.json
 trader-alerts/     SKILL.md, alerts.py, alerts.example.json
 trader-rebalance/  SKILL.md, rebalance.py

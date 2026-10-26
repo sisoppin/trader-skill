@@ -108,6 +108,15 @@ class Repo(unittest.TestCase):
                     texts.add(fh.read())
             self.assertEqual(len(texts), 1, "copies of %s differ: %s" % (name, copies))
 
+    def test_converted_order_path_skills_say_live(self):
+        for s in ("trader-budget", "trader-risk", "trader-broker"):
+            _, text = frontmatter(os.path.join(ROOT, s, "SKILL.md"))
+            low = " ".join(text.lower().split())
+            self.assertIn("live", low, s)
+            self.assertIn("real money", low, s)
+            self.assertNotIn("alpaca", low, s)
+            self.assertNotIn("paper trading", low, s)
+
     def test_every_imported_helper_is_in_the_same_skill(self):
         names = {n[:-3] for n in SHARED}
         for s in SKILLS:
