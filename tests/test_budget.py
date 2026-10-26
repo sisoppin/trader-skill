@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -9,27 +10,24 @@ from _load import load, ROOT, FIX
 
 size = load("trader-budget", "size")
 
-CFG = os.path.join(ROOT, "trader-budget", "config.example.json")
-TARGETS = os.path.join(ROOT, "trader-budget", "targets.example.json")
-TOP5 = os.path.join(FIX, "trader-budget", "berkshire-q2-2026-top5.json")
-REEL = {"AAPL": 1250, "AXP": 1119, "GOOGL": 823, "KO": 708, "BAC": 600}
-PRICES = {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53.96}
+BDIR = os.path.join(ROOT, "trader-budget")
+KDIR = os.path.join(FIX, "trader-budget", "kite")
+NOW = "2026-10-26T10:01"
 
 
 def cfg(**over):
-    with open(CFG) as fh:
-        c = json.load(fh)
+    c = size.load_config(os.path.join(BDIR, "config.example.json"))
     c.update(over)
     return c
 
 
-def rows(path):
-    with open(path) as fh:
+def targets():
+    with open(os.path.join(BDIR, "targets.example.json")) as fh:
         return size.parse_weights(json.load(fh))
 
 
-def dollars(result):
-    return {p["ticker"]: p["dollars"] for p in result["positions"]}
+def prices():
+    return size.quote_prices(KDIR, datetime.datetime(2026, 10, 26, 10, 1, tzinfo=size.IST))
 
 
 def run(argv):
@@ -39,136 +37,87 @@ def run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
-class TheReel(unittest.TestCase):
-    """$5,000, 10% cash, 25% cap: AAPL 1250 (capped), AXP 1119, GOOGL 823, KO 708, BAC 600, cash 500, idle 0."""
+class Example(unittest.TestCase):
+    def test_the_example_budget_is_capped_by_the_max_order(self):
+        r = size.size(targets(), cfg(), None, prices())
+        self.assertEqual((r["budget"], r["cash_buffer"], r["investable"], r["cap"]), (50000, 5000, 45000, 10000))
+        self.assertEqual(r["cap_by"], "your Rs 10,000 max order")
+        self.assertEqual([(p["symbol"], p["shares"], p["rupees"]) for p in r["positions"]],
+                         [("INFY", 6, 9675.0), ("RELIANCE", 7, 9816.1), ("TCS", 3, 9151.5), ("HDFCBANK", 6, 9900.0)])
+        self.assertEqual((r["invested"], r["idle"]), (38542.6, 6457.4))
 
-    def check_reel(self, r):
-        self.assertEqual(dollars(r), REEL)
-        self.assertEqual(r["cash_buffer"], 500)
-        self.assertEqual(r["invested"], 4500)
-        self.assertEqual(r["idle"], 0)
-        self.assertEqual(r["cap"], 1250)
-        self.assertEqual([p["ticker"] for p in r["positions"] if p["capped"]], ["AAPL"])
-
-    def test_from_the_raw_13f_weights(self):
-        self.check_reel(size.size(rows(TOP5), cfg()))
-
-    def test_from_the_renormalised_targets_file(self):
-        self.check_reel(size.size(rows(TARGETS), cfg()))
-
-    def test_from_inline_weights(self):
-        w = size.parse_weights(size.weights_from_arg("AAPL=22.04,AXP=17.14,GOOGL=12.62,KO=10.86,BAC=9.20"))
-        self.check_reel(size.size(w, cfg()))
-
-    def test_renormalised_weights_match_the_reel_labels(self):
-        r = size.size(rows(TOP5), cfg())
-        shown = {p["ticker"]: round(p["weight"], 1) for p in r["positions"]}
-        self.assertEqual(shown, {"AAPL": 30.7, "AXP": 23.9, "GOOGL": 17.6, "KO": 15.1, "BAC": 12.8})
-
-    def test_one_decimal_weights_stay_within_a_dollar(self):
-        w = size.parse_weights({"AAPL": 30.7, "AXP": 23.9, "GOOGL": 17.6, "KO": 15.1, "BAC": 12.8})
-        r = size.size(w, cfg())
-        self.assertEqual(r["invested"], 4500)
-        self.assertEqual(dollars(r)["AAPL"], 1250)
-        for t, v in dollars(r).items():
-            self.assertLessEqual(abs(v - REEL[t]), 1.0, t)
-
-    def test_orders_are_place_stock_order_shaped(self):
-        r = size.size(rows(TOP5), cfg())
-        orders = size.orders_from(r, "Berkshire 13F")
-        self.assertEqual(orders[0], {"symbol": "AAPL", "side": "buy", "notional": "1250", "type": "market",
-                                     "time_in_force": "day", "why": orders[0]["why"]})
-        self.assertIn("capped at 25%", orders[0]["why"])
-        for o in orders:
-            self.assertIsInstance(o["notional"], str)
-            self.assertNotIn("qty", o)
-        self.assertEqual([o["notional"] for o in orders], ["1250", "1119", "823", "708", "600"])
-
-    def test_cents_mode_keeps_the_total(self):
-        r = size.size(rows(TOP5), cfg(), cents=True)
-        d = dollars(r)
-        self.assertEqual(d["AAPL"], 1250)
-        self.assertAlmostEqual(sum(d.values()), 4500, places=2)
-        self.assertAlmostEqual(d["AXP"], 1118.13, places=2)
-        self.assertEqual(size.orders_from(r)[1]["notional"], "1118.13")
+    def test_orders_are_kite_place_order_shaped(self):
+        r = size.size(targets(), cfg(), None, prices())
+        o = size.orders_from(r, cfg())
+        self.assertEqual(o[0], {
+            "exchange": "NSE", "tradingsymbol": "INFY", "transaction_type": "BUY", "quantity": "6",
+            "product": "CNC", "order_type": "LIMIT", "price": "1612.50", "validity": "DAY",
+            "variety": "regular", "est_value": "9675.00", "est_charges": "11.49",
+            "why": "25.00% of the stock sleeve; capped at Rs 10,000, your Rs 10,000 max order"})
+        self.assertTrue(all(isinstance(x["quantity"], str) and isinstance(x["price"], str) for x in o))
+        self.assertEqual({x["product"] for x in size.orders_from(r, cfg(), "mis")}, {"MIS"})
 
 
 class Rules(unittest.TestCase):
-    def test_cap_redistributes_until_nobody_is_over(self):
-        w = size.parse_weights({"A": 60, "B": 30, "C": 10})
-        r = size.size(w, {"budget": 1000, "cash_buffer_pct": 0, "max_position_pct": 40, "min_order_usd": 1})
-        self.assertEqual(dollars(r), {"A": 400, "B": 400, "C": 200})
-        self.assertEqual(sorted(p["ticker"] for p in r["positions"] if p["capped"]), ["A", "B"])
+    def test_bigger_budget_uses_the_position_cap_and_drops_blocked(self):
+        r = size.size(targets(), cfg(max_order_value="0", blocked=["tcs.ns"]), 100000, prices())
+        self.assertEqual((r["cap"], r["cap_by"]), (25000, "25% of the Rs 1,00,000 budget"))
+        self.assertEqual(r["dropped"], [{"ticker": "TCS", "reason": "on your blocked list"}])
+        self.assertEqual([(p["symbol"], p["shares"]) for p in r["positions"]],
+                         [("INFY", 15), ("RELIANCE", 17), ("HDFCBANK", 15)])
+        self.assertEqual((r["invested"], r["idle"]), (72776.6, 17223.4))
 
-    def test_everything_capped_leaves_money_idle(self):
-        w = size.parse_weights({"AAPL": 50, "KO": 50})
-        r = size.size(w, cfg())
-        self.assertEqual(dollars(r), {"AAPL": 1250, "KO": 1250})
-        self.assertEqual(r["idle"], 2000)
-        self.assertIn("every stock is at its cap", size.report(r, size.orders_from(r)))
+    def test_a_share_dearer_than_its_slice_is_dropped(self):
+        r = size.size(size.parse_weights({"TCS": 50, "INFY": 50}),
+                      cfg(max_order_value="2000", max_position_pct="50"), 5000, prices())
+        self.assertEqual(r["dropped"], [{"ticker": "TCS",
+                                         "reason": "one share costs Rs 3,050.50, more than its slice of Rs 2,000"}])
+        self.assertEqual([(p["symbol"], p["shares"]) for p in r["positions"]], [("INFY", 1)])
 
-    def test_slices_under_the_minimum_are_dropped_and_shared_out(self):
-        w = size.parse_weights({"A": 90, "B": 7, "C": 3})
-        r = size.size(w, {"budget": 100, "cash_buffer_pct": 10, "max_position_pct": 100, "min_order_usd": 5})
-        self.assertNotIn("C", dollars(r))
-        self.assertEqual(sum(dollars(r).values()), 90)
-        self.assertTrue(all(v >= 5 for v in dollars(r).values()))
-        self.assertEqual(r["dropped"][0]["ticker"], "C")
-
-    def test_blocked_tickers_are_dropped_first(self):
-        r = size.size(rows(TOP5), cfg(blocked=["ko"]))
-        self.assertNotIn("KO", dollars(r))
-        self.assertEqual(r["invested"], 4500)
-        self.assertIn("blocked", r["dropped"][0]["reason"])
-
-    def test_top_n(self):
-        r = size.size(rows(TOP5), cfg(max_position_pct=100), top=2)
-        self.assertEqual(sorted(dollars(r)), ["AAPL", "AXP"])
-
-    def test_whole_shares_need_prices(self):
+    def test_nothing_affordable_is_an_error(self):
         with self.assertRaises(size.SizeError):
-            size.size(rows(TOP5), cfg(fractional=False))
+            size.size(targets(), cfg(), 2000, prices())
 
-    def test_whole_shares_with_prices(self):
-        r = size.size(rows(TOP5), cfg(fractional=False), prices=PRICES)
-        self.assertTrue(r["whole_shares"])
-        for p in r["positions"]:
-            self.assertEqual(p["shares"], int(p["shares"]))
-            self.assertAlmostEqual(p["dollars"], p["shares"] * PRICES[p["ticker"]], places=2)
-            self.assertLessEqual(p["dollars"], 1250)
-        self.assertAlmostEqual(r["invested"] + r["idle"], 4500, places=2)
-        self.assertLess(r["idle"], min(PRICES.values()) * 2)
-        orders = size.orders_from(r)
-        self.assertTrue(all("qty" in o and "notional" not in o for o in orders))
+    def test_missing_quote_names_the_kite_instrument(self):
+        with self.assertRaises(size.SizeError) as e:
+            size.size(size.parse_weights({"INFY": 50, "M&M": 50}), cfg(), None, prices())
+        self.assertIn("NSE:M&M", str(e.exception))
 
-    def test_no_budget_is_an_error(self):
+    def test_symbol_spellings_and_bad_input(self):
+        self.assertEqual([r["ticker"] for r in size.parse_weights({"infy.ns": 1, "nse:tcs": 1})], ["INFY", "TCS"])
         with self.assertRaises(size.SizeError):
-            size.size(rows(TOP5), {"cash_buffer_pct": 10})
-
-    def test_duplicate_tickers_are_an_error(self):
+            size.parse_weights({"BSE:INFY": 1})
         with self.assertRaises(size.SizeError):
-            size.size([{"ticker": "KO", "name": "", "weight": 1}, {"ticker": "KO", "name": "", "weight": 2}], cfg())
+            size.parse_weights({"INFY": "lots"})
+        with self.assertRaises(size.SizeError):
+            size.size(targets(), cfg(budget=None), None, prices())
 
 
 class Cli(unittest.TestCase):
-    def test_write_orders_file(self):
+    def test_write_and_report(self):
         with tempfile.TemporaryDirectory() as d:
-            out = os.path.join(d, "trader", "orders.json")
-            code, text, _ = run(["--targets", TARGETS, "--config", CFG, "--write", out])
+            out = os.path.join(d, "orders.json")
+            code, text, _ = run(["--targets", os.path.join(BDIR, "targets.example.json"),
+                                 "--config", os.path.join(BDIR, "config.example.json"),
+                                 "--kite-dir", KDIR, "--now", NOW, "--write", out])
             self.assertEqual(code, 0)
-            self.assertIn("left idle", text)
+            self.assertIn("BUY 6 INFY, CNC, LIMIT Rs 1,612.50, est. Rs 9,675 + Rs 11.49 charges", text)
+            self.assertIn("LIVE", text)
             self.assertIn("not financial advice", text)
             with open(out) as fh:
                 doc = json.load(fh)
-            self.assertEqual(doc["status"], "proposed")
-            self.assertIs(doc["paper"], True)
-            self.assertEqual([o["symbol"] for o in doc["orders"]], ["AAPL", "AXP", "GOOGL", "KO", "BAC"])
+            self.assertIs(doc["live"], True)
+            self.assertEqual(doc["created_by"], "trader-budget")
+            self.assertEqual(len(doc["orders"]), 4)
 
-    def test_json_output_and_missing_targets(self):
-        code, text, _ = run(["--targets", TARGETS, "--config", CFG, "--json"])
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(text)["result"]["idle"], 0)
-        code, _, err = run(["--targets", "/nonexistent/targets.json", "--config", CFG])
+    def test_stale_quotes_stop_the_sizing(self):
+        code, _, err = run(["--weights", "INFY=100", "--config", os.path.join(BDIR, "config.example.json"),
+                            "--kite-dir", KDIR, "--now", "2026-10-26T10:03"])
+        self.assertEqual(code, 1)
+        self.assertIn("s old", err)
+
+    def test_missing_targets(self):
+        code, _, err = run(["--targets", os.path.join(FIX, "nope.json"), "--kite-dir", KDIR, "--now", NOW])
         self.assertEqual(code, 1)
         self.assertIn("no targets file", err)
 
