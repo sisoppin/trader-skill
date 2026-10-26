@@ -90,11 +90,13 @@ class Repo(unittest.TestCase):
             self.assertNotIn("\u2014", text, rel)
             self.assertNotIn("jakeschincariol" + "@" + "gmail.com", text, rel)  # built, so this file passes too
 
-    def test_paper_trading_is_the_default(self):
+    def test_live_defaults_are_cautious(self):
         with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
-        self.assertIs(cfg["paper"], True)
-        self.assertIs(cfg.get("allow_options", False), False)
+        for k in ("allow_mis", "allow_short", "allow_market_orders", "allow_amo"):
+            self.assertIs(cfg[k], False, k)
+        self.assertLessEqual(float(cfg["max_order_value"]), 10000)
+        self.assertNotIn("paper", cfg)
 
     def test_shared_helpers_are_identical(self):
         for name in SHARED:
