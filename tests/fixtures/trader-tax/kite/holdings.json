@@ -1,0 +1,6 @@
+{"fetched_at": "2026-10-26T10:00:00+05:30", "data": [
+  {"tradingsymbol": "INFY", "exchange": "NSE", "quantity": 8, "t1_quantity": 0, "last_price": 1612.5},
+  {"tradingsymbol": "HDFCBANK", "exchange": "NSE", "quantity": 4, "t1_quantity": 0, "last_price": 1650.0},
+  {"tradingsymbol": "RELIANCE", "exchange": "NSE", "quantity": 2, "t1_quantity": 0, "last_price": 1402.3},
+  {"tradingsymbol": "TCS", "exchange": "NSE", "quantity": 3, "t1_quantity": 0, "last_price": 3050.5}
+]}
