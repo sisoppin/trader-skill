@@ -37,7 +37,7 @@ class Repo(unittest.TestCase):
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
+        root = sorted(d for d in os.listdir(ROOT) if not d.startswith((".git", ".superpowers")))  # .superpowers: git-ignored plan scratch
         self.assertEqual(root, sorted([".claude", ".claude-plugin", "CLAUDE.md", "LICENSE", "docs", "README.md",
                                        "tests"] + SKILLS))
 
