@@ -1,4 +1,3 @@
-import datetime
 import io
 import json
 import os
@@ -7,24 +6,20 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
-from _load import load, FIX
+from _load import load, ROOT, FIX
 
 lots = load("trader-tax", "lots")
+check = load("trader-risk", "check")
 
-PF_PATH = os.path.join(FIX, "trader-tax", "portfolio.json")
-PRICES_PATH = os.path.join(FIX, "trader-tax", "prices.json")
-TODAY = datetime.date(2026, 10, 13)
-D = datetime.date
-
-
-def pf():
-    with open(PF_PATH) as fh:
-        return json.load(fh)
+TDIR = os.path.join(FIX, "trader-tax")
+KDIR = os.path.join(TDIR, "kite")
+CFG = os.path.join(ROOT, "trader-budget", "config.example.json")
+NOW = "2026-10-26T10:01"
 
 
-def prices():
-    with open(PRICES_PATH) as fh:
-        return json.load(fh)["prices"]
+def args(kite_dir=KDIR, now=NOW):
+    return ["--tradebook", os.path.join(TDIR, "tradebook-sample.csv"), "--lots", os.path.join(TDIR, "lots.csv"),
+            "--fmv", os.path.join(TDIR, "fmv_2018.csv"), "--kite-dir", kite_dir, "--config", CFG, "--now", now]
 
 
 def run(argv):
@@ -34,162 +29,134 @@ def run(argv):
     return code, out.getvalue(), err.getvalue()
 
 
-class Term(unittest.TestCase):
-    def test_more_than_one_year_is_long(self):
-        self.assertEqual(lots.term(D(2025, 10, 13), D(2026, 10, 13)), "short")
-        self.assertEqual(lots.term(D(2025, 10, 13), D(2026, 10, 14)), "long")
-
-    def test_leap_day(self):
-        self.assertEqual(lots.term(D(2024, 2, 29), D(2025, 2, 28)), "short")
-        self.assertEqual(lots.term(D(2024, 2, 29), D(2025, 3, 1)), "long")
-
-
-class Lots(unittest.TestCase):
-    def test_unrealized_by_lot(self):
-        rows, totals, missing = lots.unrealized(pf(), prices(), TODAY)
-        self.assertEqual(missing, [])
-        by = {r["id"]: r for r in rows}
-        self.assertEqual(by["KO-1"]["term"], "long")
-        self.assertAlmostEqual(by["KO-1"]["gain"], -148.9, places=2)
-        self.assertEqual(by["BAC-1"]["term"], "short")
-        self.assertEqual(by["AAPL-1"]["long_term_on"], "2027-10-14")
-        axp = [t for t in totals if t["ticker"] == "AXP"][0]
-        self.assertAlmostEqual(axp["gain"], 1239.36 - 1030, places=2)
-        self.assertAlmostEqual(axp["long"], 239.52, places=2)
-        self.assertAlmostEqual(axp["short"], -30.16, places=2)
-
-    def test_fifo_hifo_specific(self):
-        axp = lots.lots_of(pf())["AXP"]
-        fifo = lots.simulate_sale(axp, 3, 309.84, TODAY)
-        self.assertEqual([u["id"] for u in fifo["lots"]], ["AXP-1"])
-        self.assertAlmostEqual(fifo["gain"], 239.52, places=2)
-        self.assertAlmostEqual(fifo["long"], 239.52, places=2)
-        hifo = lots.simulate_sale(axp, 3, 309.84, TODAY, "hifo")
-        self.assertEqual([u["id"] for u in hifo["lots"]], ["AXP-2", "AXP-1"])
-        self.assertAlmostEqual(hifo["short"], -30.16, places=2)
-        self.assertAlmostEqual(hifo["long"], 159.68, places=2)
-        spec = lots.simulate_sale(axp, 1, 309.84, TODAY, "specific", ["AXP-2"])
-        self.assertAlmostEqual(spec["gain"], -30.16, places=2)
-        with self.assertRaises(lots.TaxError):
-            lots.simulate_sale(axp, 5, 309.84, TODAY)
-        with self.assertRaises(lots.TaxError):
-            lots.simulate_sale(axp, 1, 309.84, TODAY, "specific", ["AXP-9"])
-
-    def test_example_portfolio_is_the_reel_buy(self):
-        from _load import ROOT
-        with open(os.path.join(ROOT, "trader-tax", "portfolio.example.json")) as fh:
-            ex = json.load(fh)
-        by = lots.lots_of(ex)
-        self.assertEqual({t: round(l[0]["cost"]) for t, l in by.items()},
-                         {"AAPL": 1250, "AXP": 1119, "GOOGL": 823, "KO": 708, "BAC": 600})
-        self.assertEqual(ex["cash"], 500)
-
-    def test_shares_without_lots_are_refused(self):
-        with self.assertRaises(lots.TaxError):
-            lots.lots_of({"positions": [{"ticker": "KO", "shares": 3}]})
-
-
-class WashSales(unittest.TestCase):
-    def test_harvest_finds_losses_and_skips_wash_sales(self):
-        c = lots.harvest(pf(), prices(), TODAY, min_loss=100)
-        self.assertEqual([x["ticker"] for x in c], ["KO", "BAC"])
-        ko, bac = c
-        self.assertEqual(ko["wash"], [])
-        self.assertEqual(ko["rebuy_on_or_after"], "2026-11-13")
-        self.assertAlmostEqual(ko["long"], -148.9, places=2)
-        self.assertEqual(bac["lots"], ["BAC-1"])
-        self.assertEqual(bac["wash"][0]["date"], "2026-10-01")
-        self.assertAlmostEqual(bac["disallowed"], 22.08, places=2)
-        orders = lots.harvest_orders(c)
-        self.assertEqual(orders, [{"symbol": "KO", "side": "sell", "qty": "10", "type": "market",
-                                   "time_in_force": "day", "why": orders[0]["why"]}])
-        self.assertIn("Not tax advice", orders[0]["why"])
-        both = lots.harvest_orders(c, include_wash=True)
-        self.assertEqual([o["symbol"] for o in both], ["KO", "BAC"])
-        self.assertNotIn("not your oldest lots", both[1]["why"])
-
-    def test_threshold(self):
-        self.assertEqual(lots.harvest(pf(), prices(), TODAY, min_loss=200), [])
-        c = lots.harvest(pf(), prices(), TODAY, min_loss=20)
-        self.assertIn("AXP", [x["ticker"] for x in c])
-        axp = [x for x in c if x["ticker"] == "AXP"][0]
-        self.assertFalse(axp["fifo_same"])
-        self.assertIn("not your oldest lots", lots.harvest_orders([axp])[0]["why"])
-
-    def test_a_planned_buy_is_a_wash_sale(self):
-        planned = [{"symbol": "KO", "side": "buy", "notional": "200", "type": "market", "time_in_force": "day"}]
-        ko = [x for x in lots.harvest(pf(), prices(), TODAY, 100, orders=planned) if x["ticker"] == "KO"][0]
-        self.assertEqual(ko["wash"][0]["source"], "a planned buy in trader/orders.json")
-        self.assertEqual(lots.harvest_orders([ko]), [])
-
-    def test_share_classes_are_one_family(self):
-        p = {"cash": 0, "positions": [
-            {"ticker": "GOOGL", "lots": [{"id": "GOOGL-1", "date": "2026-01-05", "shares": 2, "cost": 800}]},
-            {"ticker": "GOOG", "lots": [{"id": "GOOG-1", "date": "2026-10-05", "shares": 1, "cost": 340}]}]}
-        c = lots.harvest(p, {"GOOGL": 353.78, "GOOG": 352.0}, TODAY, min_loss=50)
-        self.assertEqual(c[0]["ticker"], "GOOGL")
-        self.assertEqual(c[0]["wash"][0]["ticker"], "GOOG")
-        self.assertEqual(lots.family("brk.b"), {"BRK.A", "BRK.B", "BRK-A", "BRK-B"})
-
-    def test_record_sale_and_rebuy_window(self):
-        p, st = pf(), {"realized": []}
-        sale = lots.simulate_sale(lots.lots_of(p)["KO"], 4, 90.11, TODAY)
-        p, st = lots.record_sale(p, "KO", sale, TODAY, 90.11, st)
-        ko = [x for x in p["positions"] if x["ticker"] == "KO"][0]
-        self.assertEqual(ko["shares"], 6)
-        self.assertEqual(ko["lots"][0]["cost"], 630.0)
-        self.assertAlmostEqual(p["cash"], 500 + 360.44, places=2)
-        self.assertAlmostEqual(st["realized"][0]["gain"], -59.56, places=2)
-        self.assertEqual(st["realized"][0]["long"], -59.56)
-        self.assertEqual(len(lots.recent_loss_sales("KO", D(2026, 10, 20), st["realized"])), 1)
-        self.assertEqual(lots.recent_loss_sales("KO", D(2026, 11, 13), st["realized"]), [])
-        self.assertEqual(lots.realized_ytd(st, 2026)["long"], -59.56)
-
-
-class Cli(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.pf = os.path.join(self.d, "portfolio.json")
-        shutil.copy(PF_PATH, self.pf)
-
-    def tearDown(self):
-        shutil.rmtree(self.d)
-
-    def common(self):
-        return ["--portfolio", self.pf, "--prices", PRICES_PATH, "--state", os.path.join(self.d, "tax.json"),
-                "--orders", os.path.join(self.d, "orders.json"), "--today", "2026-10-13"]
-
-    def test_report(self):
-        code, text, _ = run(["report", "--lots"] + self.common())
+class Gains(unittest.TestCase):
+    def test_every_year(self):
+        code, text, _ = run(["gains"] + args())
         self.assertEqual(code, 0)
-        self.assertIn("KO-1", text)
-        self.assertIn("Not tax advice", text)
+        for line in ("FY 2024-25", "FY 2025-26", "FY 2026-27",
+                     "estimated tax: short term Rs 70 + long term Rs 0 = Rs 70",
+                     "carried forward: speculative loss Rs 80 from 2024-25, usable until FY 2028-29",
+                     "1 non-equity or non-NSE tradebook rows skipped",
+                     "Not tax advice"):
+            self.assertIn(line, text)
 
-    def test_harvest_write_then_wash(self):
-        code, text, _ = run(["harvest", "--min-loss", "100", "--write", os.path.join(self.d, "orders.json")]
-                            + self.common())
+    def test_the_same_tradebook_twice_counts_once(self):
+        once = run(["gains", "--json"] + args())[1]
+        twice = run(["gains", "--json", "--tradebook", os.path.join(TDIR, "tradebook-sample.csv")] + args())[1]
+        self.assertEqual(json.loads(once)["years"], json.loads(twice)["years"])
+
+    def test_one_year_and_a_year_with_nothing(self):
+        code, text, _ = run(["gains", "--fy", "2026-27", "--json"] + args())
         self.assertEqual(code, 0)
-        self.assertIn("WASH SALE RISK", text)
-        with open(os.path.join(self.d, "orders.json")) as fh:
-            doc = json.load(fh)
-        self.assertEqual(doc["created_by"], "trader-tax")
-        self.assertEqual([o["symbol"] for o in doc["orders"]], ["KO"])
-        code, _, _ = run(["harvest", "--min-loss", "1000"] + self.common())
+        self.assertEqual([y["fy"] for y in json.loads(text)["years"]], ["2026-27"])
+        code, _, err = run(["gains", "--fy", "2019-20"] + args())
         self.assertEqual(code, 1)
+        self.assertIn("no realised gains or losses in FY 2019-20", err)
 
-        code, text, _ = run(["sell", "KO", "4", "--price", "90.11", "--record"] + self.common())
-        self.assertEqual(code, 0)
-        self.assertIn("long term", text)
-        code, text, _ = run(["wash", "KO", "--date", "2026-10-20"] + self.common())
-        self.assertEqual(code, 1)
-        self.assertIn("2026-11-13", text)
-        code, _, _ = run(["wash", "KO", "--date", "2026-11-13"] + self.common())
-        self.assertEqual(code, 0)
 
-    def test_missing_portfolio(self):
-        code, _, err = run(["report", "--portfolio", os.path.join(self.d, "nope.json")])
+class Report(unittest.TestCase):
+    def test_open_lots(self):
+        code, text, _ = run(["report"] + args())
+        self.assertEqual(code, 0)
+        self.assertIn("31 Jan 2018 price used as cost", text)
+        self.assertRegex(text, r"TCS\s+2026-08-03\s+3\s+Rs 3,300\s+Rs 3,050.50\s+-Rs 748.50  short term, "
+                               r"long term from 2027-08-04")
+        self.assertNotIn("incomplete", text)
+
+    def test_lots_that_do_not_match_kite_are_flagged(self):
+        with tempfile.TemporaryDirectory() as d:
+            kd = os.path.join(d, "kite")
+            shutil.copytree(KDIR, kd)
+            with open(os.path.join(kd, "holdings.json")) as fh:
+                doc = json.load(fh)
+            doc["data"][0]["quantity"] = 9
+            with open(os.path.join(kd, "holdings.json"), "w") as fh:
+                json.dump(doc, fh)
+            _, text, _ = run(["report"] + args(kd))
+            self.assertIn("INFY: the trades give 8 shares but Kite holds 9", text)
+
+    def test_stale_quotes(self):
+        code, _, err = run(["report"] + args(now="2026-10-26T10:05"))
         self.assertEqual(code, 1)
-        self.assertIn("no portfolio", err)
+        self.assertIn("quotes snapshot is", err)
+
+
+class Sell(unittest.TestCase):
+    def test_what_a_sale_would_realise(self):
+        code, text, _ = run(["sell", "infy.ns", "3"] + args())
+        self.assertEqual(code, 0)
+        self.assertIn("3 INFY bought 2017-06-15 at Rs 1,150: long term Rs 1,387.50 (31 Jan 2018 price used)", text)
+        code, _, err = run(["sell", "INFY", "20"] + args())
+        self.assertEqual(code, 1)
+        self.assertIn("you hold only 8 INFY", err)
+        code, _, err = run(["sell", "WIPRO", "1"] + args())
+        self.assertIn("no WIPRO held", err)
+
+    def test_sell_shows_a_missing_2018_price(self):
+        code, text, _ = run(["sell", "INFY", "3"] + args()[:4] + ["--fmv", os.path.join(TDIR, "none.csv")] + args()[6:])
+        self.assertEqual(code, 0)
+        self.assertIn("no 31 Jan 2018 price for INFY", text)
+
+
+class Harvest(unittest.TestCase):
+    def test_losses_and_long_term_headroom(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "orders.json")
+            code, text, _ = run(["harvest", "--min-loss", "500", "--write", out] + args())
+            self.assertEqual(code, 0)
+            self.assertIn("SELL 3 TCS at Rs 3,050.50: loss Rs 748.50", text)
+            self.assertIn("SELL 8 INFY at Rs 1,612.50: long-term gain Rs 3,700", text)
+            self.assertIn("no wash-sale rule", text)
+            with open(out) as fh:
+                doc = json.load(fh)
+            self.assertIs(doc["live"], True)
+            self.assertEqual([o["tradingsymbol"] for o in doc["orders"]], ["TCS"])
+            code, text, _ = run(["harvest", "--min-loss", "500", "--include-gains", "--write", out] + args())
+            with open(out) as fh:
+                orders = json.load(fh)["orders"]
+            self.assertEqual([(o["tradingsymbol"], o["quantity"]) for o in orders],
+                             [("TCS", "3"), ("HDFCBANK", "4"), ("INFY", "6"), ("RELIANCE", "2")])
+            self.assertIn("INFY: selling 6 of 8 now keeps the order under your Rs 10,000 max order", text)
+            self.assertEqual(orders[2]["why"], "book Rs 2,775 of long-term gain inside the yearly exemption")
+
+    def test_nothing_to_harvest(self):
+        code, text, _ = run(["harvest", "--min-loss", "5000"] + args())
+        self.assertIn("No position would book a loss of Rs 5,000 or more", text)
+
+    def test_a_harvest_sell_passes_the_risk_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "orders.json")
+            run(["harvest", "--min-loss", "500", "--write", out] + args())
+            with open(out) as fh:
+                orders = json.load(fh)["orders"]
+        now = check.nse_calendar.parse_now(NOW)
+        data = check.load_data(KDIR, now)
+        data.update(positions={"net": [], "day": []}, orders=[],
+                    margins={"equity": {"net": 50000.0, "available": {"live_balance": 50000.0}}})
+        cal = check.nse_calendar.Calendar(dict(check.nse_calendar.HOLIDAYS), check.nse_calendar.YEARS)
+        with open(CFG) as fh:
+            res = check.check(orders, json.load(fh), data, now, cal)
+        self.assertEqual([r["verdict"] for r in res["results"]], ["PASS"], res["results"])
+
+
+class Inputs(unittest.TestCase):
+    def test_no_trades_explains_where_to_get_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            here = os.getcwd()
+            os.chdir(d)
+            try:
+                code, _, err = run(["gains", "--kite-dir", os.path.join(d, "kite"), "--now", NOW])
+            finally:
+                os.chdir(here)
+        self.assertEqual(code, 1)
+        self.assertIn("Zerodha Console tradebook", err)
+
+    def test_missing_kite_trades_is_a_note(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, text, _ = run(["gains"] + args(os.path.join(d, "kite")))
+        self.assertIn("today's Kite trades are not included", text)
+        self.assertNotIn("FY 2026-27\n  short term: gains Rs 0, losses Rs 0, net after set-off Rs 0\n  long term:  "
+                         "gains Rs 1,000", text)
 
 
 if __name__ == "__main__":
