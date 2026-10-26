@@ -14,7 +14,7 @@ ABOUT = ("11 Claude skills that copy the investors you trust, watch the news and
 ORDER_PATH = ["trader-copycat", "trader-budget", "trader-pelosi", "trader-risk", "trader-broker",
               "trader-tax", "trader-alerts", "trader-rebalance"]
 # helper modules copied into several skills; every copy must be the same bytes
-SHARED = ["kite_snapshot.py", "nse.py", "nse_calendar.py", "nse_symbols.py", "rupees.py"]
+SHARED = ["kite_snapshot.py", "nse.py", "nse_calendar.py", "nse_symbols.py", "rupees.py", "charges.py"]
 
 
 def frontmatter(path):

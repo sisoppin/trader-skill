@@ -15,5 +15,7 @@
   "allow_short": false,
   "allow_amo": false,
   "blocked": [],
-  "charges": {}
+  "charges": {},
+  "rebalance_band_pct": "5",
+  "tax_rules": {}
 }

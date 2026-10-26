@@ -1,0 +1,70 @@
+{
+  "fetched_at": "2026-10-26T10:00:00+05:30",
+  "data": {
+    "NSE:INFY": {
+      "timestamp": "2026-10-26 09:59:58",
+      "last_trade_time": "2026-10-26 09:59:57",
+      "last_price": 1612.5,
+      "lower_circuit_limit": 1451.25,
+      "upper_circuit_limit": 1773.75,
+      "ohlc": {
+        "open": 1598.0,
+        "high": 1620.0,
+        "low": 1590.1,
+        "close": 1590.0
+      }
+    },
+    "NSE:RELIANCE": {
+      "timestamp": "2026-10-26 09:59:59",
+      "last_trade_time": "2026-10-26 09:59:58",
+      "last_price": 1402.3,
+      "lower_circuit_limit": 1274.95,
+      "upper_circuit_limit": 1558.25,
+      "ohlc": {
+        "open": 1415.0,
+        "high": 1419.9,
+        "low": 1398.0,
+        "close": 1416.6
+      }
+    },
+    "NSE:TCS": {
+      "timestamp": "2026-10-26 09:59:59",
+      "last_trade_time": "2026-10-26 09:59:56",
+      "last_price": 3050.5,
+      "lower_circuit_limit": 2745.45,
+      "upper_circuit_limit": 3355.55,
+      "ohlc": {
+        "open": 3040.0,
+        "high": 3062.0,
+        "low": 3031.0,
+        "close": 3035.0
+      }
+    },
+    "NSE:HDFCBANK": {
+      "timestamp": "2026-10-26 09:59:59",
+      "last_trade_time": "2026-10-26 09:59:59",
+      "last_price": 1650.0,
+      "lower_circuit_limit": 1485.0,
+      "upper_circuit_limit": 1815.0,
+      "ohlc": {
+        "open": 1642.0,
+        "high": 1655.0,
+        "low": 1640.5,
+        "close": 1645.0
+      }
+    },
+    "NSE:ITC": {
+      "timestamp": "2026-10-26 09:59:59",
+      "last_trade_time": "2026-10-26 09:59:58",
+      "last_price": 410.0,
+      "lower_circuit_limit": 369.0,
+      "upper_circuit_limit": 451.0,
+      "ohlc": {
+        "open": 408.0,
+        "high": 412.0,
+        "low": 406.5,
+        "close": 409.0
+      }
+    }
+  }
+}
