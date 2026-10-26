@@ -9,6 +9,8 @@
     python3 alerts.py add --symbol RELIANCE --stop 1350
     python3 alerts.py add --symbol TCS --pct 3
     python3 alerts.py add --opening-bell
+    python3 alerts.py add --mis-warning                # open MIS positions near the 15:20 square-off
+    python3 alerts.py need                             # the Kite quotes (and positions) a check needs
     python3 alerts.py check                            # rings what hit, once
     python3 alerts.py list
     python3 alerts.py reset infy-above-1700
@@ -19,6 +21,9 @@ Rule types:
   pct_move      the price moved "pct" percent or more from the previous close
                 (or from "ref" if you give one); "direction": "up" or "down"
   opening_bell  NSE opened today (rings once per trading day)
+  mis_warning   an MIS (intraday) position is still open at or after "at"
+                (default 15:05 IST); Zerodha squares MIS off from about 15:20.
+                Reads trader/kite/positions.json. Rings once per day.
 
 An above / below alert rings ONCE and then stays quiet until you reset it,
 unless the rule has "rearm": true (it re-arms when the price crosses back).
@@ -35,6 +40,7 @@ rules could not be checked (no fresh quotes).
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -144,9 +150,34 @@ def write_prices(path, quotes, now):
 
 # ---------------------------------------------------------------- rules
 
-PRICE_TYPES = {"above", "below", "stop", "target", "pct_move", "opening_bell"}
-CLOCK_TYPES = {"opening_bell"}
+PRICE_TYPES = {"above", "below", "stop", "target", "pct_move", "opening_bell", "mis_warning"}
+CLOCK_TYPES = {"opening_bell", "mis_warning"}
 LABEL = {"above": "target", "target": "target", "below": "level", "stop": "stop"}
+MIS_WARNING_AT = "15:05"
+
+
+def _hhmm(text, rid):
+    try:
+        return datetime.datetime.strptime(str(text), "%H:%M").time()
+    except ValueError:
+        raise AlertError("rule %s: \"at\" wants a time like 15:05, not %r" % (rid, text))
+
+
+def mis_positions(positions):
+    """[(symbol, quantity)] for the open MIS positions in a Kite positions answer."""
+    rows = (positions or {}).get("net") or []
+    out = []
+    for p in rows:
+        qty = int(p.get("quantity") or 0)
+        if p.get("product") == "MIS" and qty:
+            out.append((str(p.get("tradingsymbol", "")).upper(), qty))
+    return out
+
+
+def mis_due(rules, status, now):
+    """The mis_warning rules whose time has come in today's session."""
+    return [r for r in rules if r.get("type") == "mis_warning" and status["phase"] == "open"
+            and now.time() >= _hhmm(r.get("at", MIS_WARNING_AT), r.get("id"))]
 
 
 def validate(rule):
@@ -159,10 +190,13 @@ def validate(rule):
         raise AlertError("rule %s needs a numeric price" % rule.get("id"))
     if t == "pct_move" and not isinstance(rule.get("pct"), (int, float)):
         raise AlertError("rule %s needs a numeric pct" % rule.get("id"))
+    if t == "mis_warning":
+        _hhmm(rule.get("at", MIS_WARNING_AT), rule.get("id"))
 
 
-def evaluate(rules, quotes, status, state, now):
-    """Pure function. Returns (rings, new_state). Each ring: {id, symbol, message}."""
+def evaluate(rules, quotes, status, state, now, positions=None):
+    """Pure function. Returns (rings, new_state). Each ring: {id, symbol, message}.
+    positions is the Kite positions answer, needed only by mis_warning rules."""
     state = json.loads(json.dumps(state or {}))
     rung = state.setdefault("rung", {})
     today = status["date"]
@@ -177,6 +211,17 @@ def evaluate(rules, quotes, status, state, now):
                 rings.append({"id": rid, "symbol": "",
                               "message": "Opening bell: NSE is open (%s IST)." % status["now_ist"]})
                 rung[rid] = stamp
+            continue
+        if typ == "mis_warning":
+            if r in mis_due([r], status, now) and rung.get(rid, "")[:10] != today:
+                held = mis_positions(positions)
+                if held:
+                    rings.append({"id": rid, "symbol": "", "message": (
+                        "MIS positions still open at %s IST: %s. Zerodha squares MIS off from about %s IST; "
+                        "close them yourself first if you want to choose the price."
+                        % (status["now_ist"][11:], ", ".join("%s %+d" % h for h in held),
+                           nse_calendar.SQUARE_OFF.strftime("%H:%M")))})
+                    rung[rid] = stamp
             continue
         sym = r["symbol"].upper()
         q = quotes.get(sym)
@@ -279,8 +324,15 @@ def cmd_check(a):
     status = calendar(a).status(now)
     syms = _dedupe([str(r.get("symbol", "")).upper() for r in rules if r.get("type") not in CLOCK_TYPES])
     quotes, errors = get_quotes(syms, a.kite_dir, now) if syms else ({}, [])
+    positions = None
+    due = mis_due(rules, status, now)
+    if due:
+        try:
+            positions = kite_snapshot.load("positions", a.kite_dir, now=now)
+        except kite_snapshot.SnapshotError as e:
+            errors.append(str(e))
     state = _read(a.state, {})
-    rings, state = evaluate(rules, quotes, status, state, now)
+    rings, state = evaluate(rules, quotes, status, state, now, positions)
     if not a.no_write:
         _write(a.state, state)
         if quotes:
@@ -302,7 +354,20 @@ def cmd_check(a):
                   "trader-rebalance), check it (trader-risk) and say yes to it (trader-broker).")
     if rings:
         return 0
-    return 2 if syms and not quotes else 1
+    return 2 if (syms and not quotes) or (due and positions is None) else 1
+
+
+def cmd_need(a):
+    rules = _read(a.rules, {"rules": []}).get("rules", [])
+    keys = _dedupe(["NSE:" + str(r["symbol"]).upper() for r in rules
+                    if r.get("type") not in CLOCK_TYPES and r.get("symbol")])
+    pos = any(r.get("type") == "mis_warning" for r in rules)
+    if a.json:
+        print(json.dumps({"quotes": keys, "positions": pos}))
+    else:
+        print("quotes: " + (" ".join(keys) if keys else "(none)"))
+        print("positions: " + ("yes, for the MIS warning" if pos else "no"))
+    return 0 if (keys or pos) else 1
 
 
 def cmd_add(a):
@@ -310,6 +375,8 @@ def cmd_add(a):
     doc.setdefault("rules", [])
     if a.opening_bell:
         rule = {"id": a.id or "opening-bell", "type": "opening_bell"}
+    elif a.mis_warning:
+        rule = {"id": a.id or "mis-warning", "type": "mis_warning", "at": a.at or MIS_WARNING_AT}
     else:
         if not a.symbol:
             raise AlertError("--symbol is required (or --opening-bell)")
@@ -406,10 +473,15 @@ def main(argv=None):
     g.add_argument("--stop", type=float)
     g.add_argument("--pct", type=float)
     g.add_argument("--opening-bell", action="store_true")
+    g.add_argument("--mis-warning", action="store_true")
     p.add_argument("--direction", choices=["up", "down"])
     p.add_argument("--rearm", action="store_true")
     p.add_argument("--note")
     p.add_argument("--id")
+    p.add_argument("--at", help="HH:MM IST for --mis-warning (default 15:05)")
+    p = sub.add_parser("need", help="which Kite quotes and snapshots a check needs")
+    p.add_argument("--rules", default="trader/alerts.json")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("list", help="list the rules")
     p.add_argument("--rules", default="trader/alerts.json")
     p.add_argument("--state", default="trader/state/alerts.json")
@@ -422,7 +494,7 @@ def main(argv=None):
         return 1
     try:
         return {"clock": cmd_clock, "holidays": cmd_holidays, "quote": cmd_quote, "check": cmd_check,
-                "add": cmd_add, "list": cmd_list, "reset": cmd_reset}[a.cmd](a)
+                "need": cmd_need, "add": cmd_add, "list": cmd_list, "reset": cmd_reset}[a.cmd](a)
     except nse.NseBlocked as e:
         print("alerts.py: %s" % e, file=sys.stderr)
         return 2

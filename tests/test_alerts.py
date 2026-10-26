@@ -212,5 +212,70 @@ class Cli(unittest.TestCase):
         self.assertIn("only NSE symbols", err)
 
 
+class MisWarning(unittest.TestCase):
+    def setUp(self):
+        with open(os.path.join(KDIR, "positions.json")) as fh:
+            self.pos = json.load(fh)["data"]
+        self.rules = [{"id": "mis", "type": "mis_warning", "at": "15:05"}]
+
+    def ev(self, when, state=None, pos=None):
+        now = ist(when)
+        return alerts.evaluate(self.rules, {}, CAL.status(now), state or {}, now,
+                               self.pos if pos is None else pos)
+
+    def test_rings_once_after_the_time_with_open_mis(self):
+        self.assertEqual(self.ev("2026-10-26T15:04")[0], [])
+        rings, st = self.ev("2026-10-26T15:05")
+        self.assertEqual(rings[0]["message"],
+                         "MIS positions still open at 15:05 IST: INFY +5. Zerodha squares MIS off from about "
+                         "15:20 IST; close them yourself first if you want to choose the price.")
+        self.assertEqual(self.ev("2026-10-26T15:10", st)[0], [])
+
+    def test_quiet_without_open_mis_or_outside_the_session(self):
+        flat = {"net": [{"tradingsymbol": "INFY", "exchange": "NSE", "product": "MIS", "quantity": 0}]}
+        self.assertEqual(self.ev("2026-10-26T15:06", pos=flat)[0], [])
+        self.assertEqual(self.ev("2026-10-26T15:31")[0], [])
+        self.assertEqual(self.ev("2026-11-10T15:06")[0], [])
+
+    def test_short_mis_shows_a_minus(self):
+        short = {"net": [{"tradingsymbol": "TCS", "exchange": "NSE", "product": "MIS", "quantity": -3}]}
+        self.assertIn("TCS -3", self.ev("2026-10-26T15:06", pos=short)[0][0]["message"])
+
+    def test_bad_time(self):
+        now = ist("2026-10-26T15:06")
+        with self.assertRaises(alerts.AlertError):
+            alerts.evaluate([{"id": "m", "type": "mis_warning", "at": "3pm"}], {}, CAL.status(now), {}, now,
+                            self.pos)
+
+    def test_check_reads_the_positions_snapshot(self):
+        with tempfile.TemporaryDirectory() as d:
+            rules = os.path.join(d, "alerts.json")
+            run(["add", "--rules", rules, "--mis-warning"])
+            code, text, _ = run(["check", "--rules", rules, "--state", os.path.join(d, "state.json"),
+                                 "--prices-out", os.path.join(d, "prices.json"), "--kite-dir", KDIR,
+                                 "--holidays", os.path.join(d, "h.json"), "--now", "2026-10-26T15:06"])
+            self.assertEqual(code, 0)
+            self.assertIn("ALERT MIS positions still open at 15:06 IST: INFY +5.", text)
+            code, text, _ = run(["check", "--rules", rules, "--state", os.path.join(d, "state2.json"),
+                                 "--no-write", "--kite-dir", KDIR, "--holidays", os.path.join(d, "h.json"),
+                                 "--now", "2026-10-26T15:12"])
+            self.assertEqual(code, 2)
+            self.assertIn("positions snapshot is", text)
+
+
+class Need(unittest.TestCase):
+    def test_lists_what_to_ask_kite_for(self):
+        with tempfile.TemporaryDirectory() as d:
+            rules = os.path.join(d, "alerts.json")
+            run(["add", "--rules", rules, "--symbol", "infy", "--above", "1700"])
+            run(["add", "--rules", rules, "--symbol", "m&m", "--pct", "2"])
+            run(["add", "--rules", rules, "--opening-bell"])
+            run(["add", "--rules", rules, "--mis-warning", "--at", "15:00"])
+            code, text, _ = run(["need", "--rules", rules, "--json"])
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(text), {"quotes": ["NSE:INFY", "NSE:M&M"], "positions": True})
+            self.assertEqual(run(["need", "--rules", os.path.join(d, "none.json")])[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
