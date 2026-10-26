@@ -35,6 +35,9 @@ class ExplicitYes(unittest.TestCase):
         for r in ("yes", "Yes.", "YES", "y", "yes place it", "Yes, buy it", "yes INFY", "yes 6 INFY",
                   "yes 6 shares at 1612.50", "yes 9,675"):
             self.assertTrue(self.yes(r), r)
+        for r in ("yes buy 6 INFY at Rs 1,612.50 delivery", "yes, place it please",
+                  "yes 6 shares of infy at 1612.50 limit"):
+            self.assertTrue(self.yes(r), r)
 
     def test_anything_else_does_not(self):
         for r in ("", "sure", "ok", "okay", "go", "do it", "yeah", "haan", "absolutely", "send it",
@@ -42,6 +45,22 @@ class ExplicitYes(unittest.TestCase):
                   "yes TCS", "yes HDFCBANK too", "yes 7", "yes but make it 5", "yes?", "no", "not yes",
                   "yes, wait", "yes if it is under 1600"):
             self.assertFalse(self.yes(r), r)
+
+    def test_a_yes_that_names_the_wrong_quantity_or_price_does_not(self):
+        for r in ("yes 7 shares at 1612.50", "yes 60 INFY at 1612.50", "yes 6 shares at 1700",
+                  "yes 6 lakh", "yes -6"):
+            self.assertFalse(self.yes(r), r)
+
+    def test_a_yes_that_contradicts_the_order_in_words_does_not(self):
+        for r in ("yes sell it", "yes sell 6 INFY", "yes WIPRO", "yes, never mind", "yes nope",
+                  "yes tomorrow", "yes, except INFY", "yes intraday", "yes at market"):
+            self.assertFalse(self.yes(r), r)
+
+    def test_mis_sell_words_follow_the_order(self):
+        sell = dict(INFY, transaction_type="SELL", product="MIS")
+        self.assertTrue(self.yes("yes sell intraday", order=sell))
+        self.assertFalse(self.yes("yes buy", order=sell))
+        self.assertFalse(self.yes("yes delivery", order=sell))
 
 
 class TicketShape(unittest.TestCase):

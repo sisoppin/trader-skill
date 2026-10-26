@@ -50,8 +50,13 @@ PRODUCT_WORDS = {"CNC": "delivery (CNC)", "MIS": "intraday (MIS)"}
 RISK_MAX_AGE = 600  # seconds: an older risk check has stale prices behind it
 YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}
-DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "stop", "but", "maybe", "later",
-               "hold", "unless", "if"}
+# Everything a plain yes may say beyond the one order. Anything else is refused.
+FILLER = {"please", "place", "it", "this", "that", "order", "the", "go", "ahead", "confirm", "confirmed",
+          "share", "shares", "of", "at", "rs", "for", "now"}
+SIDE_WORDS = {"buy", "sell"}
+PRODUCT_TERMS = {"delivery": "CNC", "cnc": "CNC", "intraday": "MIS", "mis": "MIS"}
+TYPE_TERMS = {"limit": "LIMIT", "market": "MARKET"}
+OK_SYMBOLS = {",", ".", "!", "₹"}  # comma, full stop, exclamation mark, rupee sign
 
 
 class TicketError(Exception):
@@ -140,31 +145,60 @@ def amount_numbers(order):
 
 
 def parse_yes(reply, order, batch_symbols=()):
-    """Is this reply an explicit yes for THIS one order? Returns (ok, why)."""
+    """Is this reply an explicit yes for THIS one order? Returns (ok, why).
+
+    An allowlist, not a blocklist. A reply counts only if it starts with "yes"
+    or "y" and every other piece of it is one of:
+      - a number that equals the order's quantity, price or est_value (every
+        number must match, so "yes 6 shares at 1700" is refused);
+      - this order's own symbol (any case), a filler word (FILLER), the side
+        (buy or sell, matching the order), the product (delivery or intraday,
+        matching the order) or the type (limit or market, matching the order);
+      - a comma, full stop, exclamation mark or rupee sign.
+    A batch word (all, both, rest...) or another stock in the batch is refused
+    with its own message. Any other word (sell on a buy, WIPRO, never, nope,
+    tomorrow, except, too, lakh...) is refused, so a yes that contradicts the
+    order or adds a condition cannot pass.
+    """
     raw = (reply or "").strip()
     if not raw:
         return False, "the reply is empty"
     if "?" in raw:
         return False, "the reply is a question, not a yes"
-    words = re.findall(r"[a-z']+", raw.lower())
-    if not words or words[0] not in YES_WORDS:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9&\-]*|\d[\d,]*(?:\.\d+)?|\S", raw)
+    if not tokens or tokens[0].lower() not in YES_WORDS:
         return False, "only a reply that starts with \"yes\" counts (not ok, sure, go, do it)"
-    if BATCH_WORDS & set(words):
+    lowered = [t.lower() for t in tokens]
+    if BATCH_WORDS & set(lowered):
         return False, "a yes covers one order at a time, not a batch"
-    if DOUBT_WORDS & set(words[1:]):
-        return False, "the reply has a condition or a doubt in it; ask again"
     sym = str(order.get("tradingsymbol", "")).upper()
-    tokens = set(re.findall(r"[A-Z][A-Z0-9&\-]{1,19}", raw.upper()))
     others = {str(s).upper() for s in batch_symbols} - {sym}
-    named = tokens & others
-    if named:
-        return False, "the reply names %s, but this order is for %s" % (", ".join(sorted(named)), sym)
-    nums = [float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", raw)]
-    if nums:
-        want = amount_numbers(order)
-        if not any(abs(n - w) < 0.005 for n in nums for w in want):
-            return False, "the reply says %s, but this order is %s" % (
-                ", ".join("%g" % n for n in nums), plain(order))
+    side = str(order.get("transaction_type", "")).lower()
+    product = str(order.get("product", "")).upper()
+    order_type = str(order.get("order_type", "")).upper()
+    wants = amount_numbers(order)
+    for tok, low in zip(tokens[1:], lowered[1:]):
+        if tok[0].isdigit():
+            n = float(tok.replace(",", ""))
+            if not any(abs(n - w) < 0.005 for w in wants):
+                return False, "the reply says %s, but this order is %s" % (tok, plain(order))
+        elif tok[0].isalpha():
+            up = tok.upper()
+            if up == sym:
+                continue
+            if up in others:
+                return False, "the reply names %s, but this order is for %s" % (up, sym)
+            if low in FILLER:
+                continue
+            if low in SIDE_WORDS and low == side:
+                continue
+            if low in PRODUCT_TERMS and PRODUCT_TERMS[low] == product:
+                continue
+            if low in TYPE_TERMS and TYPE_TERMS[low] == order_type:
+                continue
+            return False, "the reply has words beyond a plain yes for this order (%r); ask again" % tok
+        elif tok not in OK_SYMBOLS:
+            return False, "the reply has words beyond a plain yes for this order (%r); ask again" % tok
     return True, "explicit yes for %s" % plain(order)
 
 
