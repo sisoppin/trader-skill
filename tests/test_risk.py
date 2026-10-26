@@ -252,6 +252,54 @@ class Data(unittest.TestCase):
         self.assertNotEqual(check.fingerprint(o), check.fingerprint(dict(o, quantity="7")))
 
 
+class OpenOrders(unittest.TestCase):
+    def run_with(self, orders, *rows):
+        base = {"order_id": "1", "status": "OPEN", "exchange": "NSE", "product": "CNC"}
+        return run_check(orders, d=data(orders=[dict(base, **r) for r in rows]))
+
+    def sell(self, qty, **over):
+        return dict({"tradingsymbol": "RELIANCE", "transaction_type": "SELL", "quantity": qty, "filled_quantity": 0}, **over)
+
+    def test_an_open_sell_reduces_what_can_be_sold_and_is_a_duplicate(self):
+        res = self.run_with([order("RELIANCE", "SELL", "1", "1402.30")], self.sell(2))
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("short: selling 1 RELIANCE but you hold 2 and 2 are already in open sell orders", why(res))
+        self.assertIn("duplicate: an open SELL RELIANCE CNC order is already in Kite's order book; "
+                      "wait for it to fill or cancel it", why(res))
+
+    def test_a_part_filled_open_sell_leaves_only_the_pending_shares(self):
+        res = self.run_with([order("RELIANCE", "SELL", "1", "1402.30")], self.sell(2, filled_quantity=1))
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertNotIn("short:", why(res))
+        self.assertIn("duplicate: an open SELL RELIANCE CNC", why(res))
+        res = self.run_with([order("RELIANCE", "SELL", "2", "1402.30")], self.sell(5, filled_quantity=0, pending_quantity=1))
+        self.assertIn("and 1 are already in open sell orders", why(res))
+
+    def test_an_open_mis_sell_does_not_reduce_cnc_availability(self):
+        res = self.run_with([order("RELIANCE", "SELL", "2", "1402.30")], self.sell(1, product="MIS"))
+        self.assertEqual(verdicts(res), ["PASS"], why(res))
+
+    def test_a_duplicate_needs_the_same_product(self):
+        buy = {"tradingsymbol": "INFY", "transaction_type": "BUY", "quantity": 6, "filled_quantity": 0}
+        res = self.run_with([order("INFY", "BUY", "6")], buy)
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("duplicate: an open BUY INFY CNC order is already in Kite's order book", why(res))
+        res = self.run_with([order("INFY", "BUY", "6")], dict(buy, product="MIS"))
+        self.assertEqual(verdicts(res), ["PASS"], why(res))
+
+    def test_finished_orders_are_not_open(self):
+        rows = [self.sell(2, status=s) for s in ("COMPLETE", "REJECTED", "cancelled")]
+        res = self.run_with([order("RELIANCE", "SELL", "2", "1402.30")], *rows)
+        self.assertEqual(verdicts(res), ["PASS"], why(res))
+
+    def test_an_open_order_without_a_usable_quantity_is_a_data_error(self):
+        res = self.run_with([order()], self.sell("lots"))
+        self.assertEqual(verdicts(res), ["BLOCK"])
+        self.assertIn("data: the orders snapshot has an order without a usable quantity", why(res))
+        res = self.run_with([order()], self.sell(2, pending_quantity="x"))
+        self.assertIn("data: the orders snapshot has an order without a usable quantity", why(res))
+
+
 class Cli(unittest.TestCase):
     def run_main(self, argv):
         out, err = io.StringIO(), io.StringIO()

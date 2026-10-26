@@ -41,7 +41,7 @@ Right before every check, call the Kite connector and save each answer with
 | `holdings` | holdings | position size, delivery sales |
 | `positions` | positions | today's delivery (CNC) trades, intraday exposure and the daily loss stop |
 | `margins` | margins | available cash and equity margin |
-| `orders` | the day's orders | the daily order limit |
+| `orders` | the day's orders | the daily order limit and open orders (no second order on the same stock and side, no selling shares already in an open sell) |
 
 Quotes older than 120 seconds and the others older than 10 minutes are
 refused, and any rule that needs a refused snapshot BLOCKS the order.

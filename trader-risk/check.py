@@ -36,13 +36,15 @@ What blocks an order:
   cash         a CNC buy plus its charges needs more than your available
                cash, or dips into your "cash_buffer_pct" buffer
   position     the stock would be over "max_position_pct" of the account
-  short        a CNC sell of more than you hold; an MIS sell that would
+  short        a CNC sell of more than you hold less what open sell orders
+               in Kite's order book already cover; an MIS sell that would
                leave you short, unless "allow_short" is true
   intraday     a new MIS position after "mis_cutoff" (15:00 IST); MIS
                exposure over "max_mis_exposure_pct" of your equity margin;
                any new MIS position once the day's loss reaches
                "daily_loss_limit"
-  duplicate    the same symbol, side and product twice in this batch
+  duplicate    the same symbol, side and product twice in this batch, or
+               already open (not filled) in Kite's order book
   daily limit  more than "max_orders_per_day" orders today (Kite's order
                book plus the ones passed earlier in this batch)
   data         a Kite snapshot a rule needs is missing or stale: that is a
@@ -94,6 +96,7 @@ KITE_FIELDS = ("exchange", "tradingsymbol", "transaction_type", "quantity", "pro
                "price", "trigger_price", "validity", "variety")
 FNO = re.compile(r"\d.*(FUT|CE|PE)$")
 NOT_PLACED = {"REJECTED", "CANCELLED"}
+NOT_OPEN = {"COMPLETE", "REJECTED", "CANCELLED"}
 PAISA = 0.005
 SNAPSHOTS = ("quotes", "holdings", "positions", "margins", "orders")
 
@@ -196,7 +199,7 @@ def _need(data, kind):
 def account(data):
     """What the Kite snapshots say about the account. Missing pieces stay None."""
     acct = {"cash": None, "equity": None, "held": None, "held_value": None, "mis_net": None,
-            "mis_exposure": None, "day_pnl": None, "placed": None}
+            "mis_exposure": None, "day_pnl": None, "placed": None, "open": None}
     quotes = data.get("quotes") if isinstance(data.get("quotes"), dict) else {}
     m = data.get("margins")
     if isinstance(m, dict):
@@ -236,11 +239,33 @@ def account(data):
     o = data.get("orders")
     if isinstance(o, list):
         acct["placed"] = sum(1 for row in o if str(row.get("status", "")).upper() not in NOT_PLACED)
+        acct["open"] = []
+        for row in o:
+            is_open, n = _pending(row)
+            if is_open:
+                acct["open"].append((str(row.get("tradingsymbol", "")).upper(),
+                                     str(row.get("transaction_type", "")).upper(),
+                                     str(row.get("product", "")).upper(), n or 0))
     return acct
 
 
 def _numeric(x):
     return _f(x) is not None
+
+
+def _pending(row):
+    """(is_open, pending shares) for a Kite order row. Shares is None when the open order has no usable
+    quantity. pending_quantity if numeric, else quantity minus filled_quantity, never below 0."""
+    if str(row.get("status", "")).upper() in NOT_OPEN:
+        return False, 0
+    for k in ("quantity", "filled_quantity", "pending_quantity"):
+        if row.get(k) is not None and not _numeric(row.get(k)):
+            return True, None
+    if _numeric(row.get("pending_quantity")):
+        return True, max(_f(row.get("pending_quantity")), 0)
+    if not _numeric(row.get("quantity")):
+        return True, None
+    return True, max(_f(row.get("quantity")) - (_f(row.get("filled_quantity")) or 0), 0)
 
 
 def validated(data):
@@ -273,6 +298,8 @@ def validated(data):
     if o is not None and not isinstance(o, str):
         if not (isinstance(o, list) and all(isinstance(r, dict) for r in o)):
             bad("orders", "is not a list of orders")
+        elif any(_pending(r)[1] is None for r in o):
+            bad("orders", "has an order without a usable quantity")
     return d
 
 
@@ -416,9 +443,14 @@ def check(orders, cfg, data, now, cal):
         if product == "CNC" and side == "SELL" and qty:
             if need("holdings") and need("positions"):
                 have = snap_held.get(sym, 0) - sold_cnc.get(sym, 0)
-                if qty > have + 1e-9:
-                    reasons.append("short: selling %d %s but you hold %d; a delivery sale needs the shares"
-                                   % (qty, sym, int(have)))
+                pend = sum(n for (s_, t_, p_, n) in (acct["open"] or []) if (s_, t_, p_) == (sym, "SELL", "CNC"))
+                if qty > have - pend + 1e-9:
+                    if pend:
+                        reasons.append("short: selling %d %s but you hold %d and %d are already in open sell orders"
+                                       % (qty, sym, int(have), int(pend)))
+                    else:
+                        reasons.append("short: selling %d %s but you hold %d; a delivery sale needs the shares"
+                                       % (qty, sym, int(have)))
         if product == "MIS" and side in ("BUY", "SELL") and qty:
             if need("positions") and need("margins"):
                 net = snap_mis.get(sym, 0)
@@ -446,6 +478,9 @@ def check(orders, cfg, data, now, cal):
         if key in seen:
             reasons.append("duplicate: a second %s %s %s in this batch" % (side, sym, product))
         seen.add(key)
+        if acct["open"] and any((s_, t_, p_) == key for (s_, t_, p_, n) in acct["open"]):
+            reasons.append("duplicate: an open %s %s %s order is already in Kite's order book; wait for it to "
+                           "fill or cancel it" % (side, sym, product))
         if need("orders"):
             passed = sum(1 for r in results if r["verdict"] == "PASS")
             cap_n = int(c["max_orders_per_day"])
