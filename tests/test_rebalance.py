@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -106,6 +107,51 @@ class Rules(unittest.TestCase):
         self.assertIn("NSE:TCS", str(e.exception))
         with self.assertRaises(rebalance.RebalanceError):
             rebalance.plan(*setup(cash_buffer_pct="nan"))
+
+
+class FixRound1(unittest.TestCase):
+    def test_open_orders_skip_the_symbol(self):
+        res = rebalance.plan(*setup(), open_orders=[{"tradingsymbol": "INFY", "status": "OPEN"}])
+        self.assertNotIn("INFY", [o["tradingsymbol"] for o in res["orders"]])
+        self.assertTrue(res["orders"])
+        self.assertEqual([r["action"] for r in res["rows"] if r["symbol"] == "INFY"], ["open order in Kite, skipped"])
+        self.assertIn("INFY has an open order in Kite's order book: wait for it to fill or cancel it, then run "
+                      "again", res["notes"])
+        res = rebalance.plan(*setup(), open_orders=[{"tradingsymbol": "RELIANCE", "status": "trigger pending"}])
+        self.assertNotIn("RELIANCE", [o["tradingsymbol"] for o in res["orders"]])
+        self.assertIn(("SELL", "INFY"), [(o["transaction_type"], o["tradingsymbol"]) for o in res["orders"]])
+
+    def test_finished_orders_change_nothing(self):
+        base = rebalance.plan(*setup())
+        done = [{"tradingsymbol": "INFY", "status": s} for s in ("COMPLETE", "rejected", "Cancelled")]
+        self.assertEqual(rebalance.plan(*setup(), open_orders=done), base)
+
+    def test_orders_snapshot_must_be_a_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            for f in os.listdir(KDIR):
+                shutil.copy(os.path.join(KDIR, f), d)
+            with open(os.path.join(d, "orders.json"), "w") as fh:
+                json.dump({"fetched_at": "2026-10-26T10:00:00+05:30", "data": {"x": 1}}, fh)
+            with self.assertRaises(rebalance.RebalanceError):
+                rebalance.load_snapshots(d, check.nse_calendar.parse_now(NOW))
+        self.assertEqual(rebalance.load_snapshots(KDIR, check.nse_calendar.parse_now(NOW))["orders"], [])
+
+    def test_write_with_nothing_to_propose_removes_the_old_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "orders.json")
+            with open(out, "w") as fh:
+                fh.write("{}")
+            code, text, _ = run(["--targets", TARGETS, "--config", CFG_PATH, "--kite-dir", KDIR, "--now", NOW,
+                                 "--band", "15", "--write", out])
+            self.assertEqual(code, 1)
+            self.assertFalse(os.path.exists(out))
+            self.assertIn("Removed the old %s: nothing to propose." % out, text)
+
+    def test_percentage_bounds(self):
+        for k, v in (("cash_buffer_pct", "100"), ("cash_buffer_pct", "150"), ("max_position_pct", "0"),
+                     ("max_position_pct", "101")):
+            with self.assertRaises(rebalance.RebalanceError, msg=(k, v)):
+                rebalance.plan(*setup(**{k: v}))
 
 
 class Cli(unittest.TestCase):

@@ -31,6 +31,9 @@ The rules:
                 max_order_value is cut to the max (run it again later)
   order count   at most max_orders_per_day orders (sells first); trader-risk
                 also counts what Kite's order book already shows today
+  open orders   a stock with an open order in Kite's order book (any status
+                but COMPLETE, REJECTED or CANCELLED) gets no new order, buy or
+                sell, until that order fills or is cancelled
   untracked     holdings not in the targets are left alone and listed, unless
                 --sell-untracked
 
@@ -55,6 +58,7 @@ from rupees import inr
 DEFAULTS = {"cash_buffer_pct": 10, "max_position_pct": 25, "max_order_value": 10000, "min_order_value": 100,
             "max_orders_per_day": 5, "blocked": [], "rebalance_band_pct": 5}
 EPS = 1e-9
+FINISHED = ("COMPLETE", "REJECTED", "CANCELLED")
 
 
 class RebalanceError(Exception):
@@ -156,7 +160,7 @@ def _order(sym, side, qty, price, cfg, why):
             "variety": "regular", "est_value": "%.2f" % value, "est_charges": "%.2f" % est["total"], "why": why}
 
 
-def plan(cash, held, prices, weights, cfg, band=None, sell_untracked=False):
+def plan(cash, held, prices, weights, cfg, band=None, sell_untracked=False, open_orders=None):
     """Pure function: the drift table and the proposed Kite orders."""
     c = dict(DEFAULTS)
     c.update(cfg or {})
@@ -164,6 +168,13 @@ def plan(cash, held, prices, weights, cfg, band=None, sell_untracked=False):
     buf_pct, cap_pct = _num(c["cash_buffer_pct"], "cash_buffer_pct"), _num(c["max_position_pct"], "max_position_pct")
     min_o, max_o = _num(c["min_order_value"], "min_order_value"), _num(c["max_order_value"], "max_order_value")
     max_n = int(_num(c["max_orders_per_day"], "max_orders_per_day"))
+    if buf_pct >= 100:
+        raise RebalanceError("config cash_buffer_pct must be below 100, got %r" % (c["cash_buffer_pct"],))
+    if cap_pct <= 0 or cap_pct > 100:
+        raise RebalanceError("config max_position_pct must be above 0 and at most 100, got %r"
+                             % (c["max_position_pct"],))
+    busy = {str(o.get("tradingsymbol", "")).upper() for o in open_orders or []
+            if str(o.get("status", "")).upper() not in FINISHED}
     need = sorted(set(held) | set(weights), key=lambda t: (-weights.get(t, 0.0), t))
     missing = [t for t in need if not prices.get(t)]
     if missing:
@@ -188,6 +199,11 @@ def plan(cash, held, prices, weights, cfg, band=None, sell_untracked=False):
                "drift": round(drift, 2) if abs(drift) >= 0.005 else 0.0, "target_value": round(tgt, 2),
                "tracked": tracked, "action": "hold"}
         rows.append(row)
+        if t in busy:
+            row["action"] = "open order in Kite, skipped"
+            notes.append("%s has an open order in Kite's order book: wait for it to fill or cancel it, then run "
+                         "again" % t)
+            continue
         if not tracked:
             if sell_untracked and held.get(t, 0) > 0:
                 sells.append((t, held[t], "not in your targets; selling the whole position (--sell-untracked)"))
@@ -287,14 +303,16 @@ def report(res):
 
 def load_snapshots(kite_dir, now=None):
     snap = {}
-    for kind in ("holdings", "positions", "margins", "quotes"):
+    for kind in ("holdings", "positions", "margins", "orders", "quotes"):
         try:
             v = kite_snapshot.load(kind, kite_dir, now=now)
         except kite_snapshot.SnapshotError as e:
             raise RebalanceError(str(e))
         snap[kind] = kite_snapshot.quotes(v) if kind == "quotes" else v
-    if not isinstance(snap["holdings"], list) or not isinstance(snap["positions"], dict):
-        raise RebalanceError("the holdings or positions snapshot is not in Kite's shape (Kite answer changed?)")
+    if not isinstance(snap["holdings"], list) or not isinstance(snap["positions"], dict) \
+            or not isinstance(snap["orders"], list):
+        raise RebalanceError("the holdings, positions or orders snapshot is not in Kite's shape "
+                             "(Kite answer changed?)")
     return snap
 
 
@@ -322,7 +340,11 @@ def main(argv=None):
         cash, held = account(snap)
         prices = {s: q["price"] for s, q in snap["quotes"].items()}
         weights = parse_targets(read_json(a.targets, "targets"), cfg.get("blocked"))
-        res = plan(cash, held, prices, weights, cfg, a.band, a.sell_untracked)
+        res = plan(cash, held, prices, weights, cfg, a.band, a.sell_untracked, snap["orders"])
+        removed = False
+        if a.write and not res["orders"] and os.path.exists(a.write):
+            os.remove(a.write)
+            removed = True
         if a.write and res["orders"]:
             d = os.path.dirname(a.write)
             if d:
@@ -344,6 +366,8 @@ def main(argv=None):
         print(report(res))
         if a.write and res["orders"]:
             print("Wrote %d proposed order(s) to %s." % (len(res["orders"]), a.write))
+        if removed:
+            print("Removed the old %s: nothing to propose." % a.write)
     return 0 if res["orders"] else 1
 
 
