@@ -1,0 +1,23 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // .tool_response.filePath'); case \"$f\" in *.md|*.py|*.json|*.csv|*.txt|*.xml|*/LICENSE) ;; *) exit 0;; esac; hits=$(grep -n \"$(printf '\\342\\200\\224')\" \"$f\" | head -5); [ -z \"$hits\" ] || { echo \"Em dash (U+2014) in $f is banned by tests/test_repo.py; replace with a colon, comma or parentheses:\" >&2; echo \"$hits\" >&2; exit 2; }",
+            "timeout": 10,
+            "statusMessage": "Checking for em dashes"
+          },
+          {
+            "type": "command",
+            "command": "f=$(jq -r '.tool_input.file_path // .tool_response.filePath'); case \"$f\" in *.py) ;; *) exit 0;; esac; r=$(command -v ruff || echo \"$HOME/.local/bin/ruff\"); [ -x \"$r\" ] || exit 0; out=$(\"$r\" check --select F,E9 --target-version py38 --no-cache --quiet \"$f\" 2>&1) || { echo \"$out\" >&2; exit 2; }",
+            "timeout": 20,
+            "statusMessage": "Linting with ruff"
+          }
+        ]
+      }
+    ]
+  }
+}
