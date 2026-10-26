@@ -62,15 +62,27 @@ class CalendarError(Exception):
     pass
 
 
-def parse_now(text=None):
-    """ISO time -> aware IST datetime. No offset means IST. None means now."""
-    if not text:
-        return datetime.datetime.now(IST).replace(microsecond=0)
+def parse_iso(text):
+    """ISO time -> aware IST datetime. No offset means IST. No clock check: use it for stored times."""
     try:
         t = datetime.datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
-    except ValueError:
+    except (ValueError, AttributeError):
         raise CalendarError("--now wants an ISO time like 2026-10-26T09:20 (IST) or ...Z (UTC)")
     return t.replace(tzinfo=IST) if t.tzinfo is None else t.astimezone(IST)
+
+
+def parse_now(text=None):
+    """The --now value -> aware IST datetime. None means the real clock. A given time must be within
+    5 seconds of the real clock unless TRADER_TEST_CLOCK=1 (tests): live checks never run on a fake clock."""
+    real = datetime.datetime.now(IST).replace(microsecond=0)
+    if not text:
+        return real
+    t = parse_iso(text)
+    off = abs((t - real).total_seconds())
+    if off > 5 and os.environ.get("TRADER_TEST_CLOCK") != "1":
+        raise CalendarError("--now is for tests only: it is %d s from the real clock "
+                            "(set TRADER_TEST_CLOCK=1 to simulate)" % off)
+    return t
 
 
 def parse_holiday_master(doc):

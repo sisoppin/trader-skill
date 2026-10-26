@@ -221,7 +221,7 @@ def risk_verdict(risk, fp, now):
     if not risk:
         return None, "trader-risk has not checked these orders (run check.py)"
     try:
-        checked = nse_calendar.parse_now(risk.get("checked_at"))
+        checked = nse_calendar.parse_iso(risk.get("checked_at"))
     except nse_calendar.CalendarError:
         checked = None
     if not risk.get("checked_at") or checked is None:

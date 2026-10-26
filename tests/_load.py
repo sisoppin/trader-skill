@@ -3,6 +3,7 @@
 import importlib.util
 import os
 
+os.environ.setdefault("TRADER_TEST_CLOCK", "1")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIX = os.path.join(ROOT, "tests", "fixtures")
 

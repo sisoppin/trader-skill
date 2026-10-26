@@ -116,6 +116,17 @@ class Cli(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("s old", err)
 
+    def test_now_is_for_tests_only_on_a_live_run(self):
+        saved = os.environ.pop("TRADER_TEST_CLOCK", None)
+        try:
+            code, _, err = run(["--weights", "INFY=100", "--config", os.path.join(BDIR, "config.example.json"),
+                                "--kite-dir", KDIR, "--now", "2026-10-26T10:01"])
+        finally:
+            if saved is not None:
+                os.environ["TRADER_TEST_CLOCK"] = saved
+        self.assertEqual(code, 1)
+        self.assertIn("for tests only", err)
+
     def test_missing_targets(self):
         code, _, err = run(["--targets", os.path.join(FIX, "nope.json"), "--kite-dir", KDIR, "--now", NOW])
         self.assertEqual(code, 1)

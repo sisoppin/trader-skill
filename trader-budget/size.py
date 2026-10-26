@@ -458,6 +458,10 @@ def main(argv=None):
         if a.now:
             t = datetime.datetime.fromisoformat(a.now.replace("Z", "+00:00"))
             now = t.replace(tzinfo=IST) if t.tzinfo is None else t.astimezone(IST)
+            off = abs((now - datetime.datetime.now(IST)).total_seconds())
+            if off > 5 and os.environ.get("TRADER_TEST_CLOCK") != "1":
+                raise SizeError("--now is for tests only: it is %d s from the real clock "
+                                "(set TRADER_TEST_CLOCK=1 to simulate)" % off)
         prices = quote_prices(a.kite_dir, now)
         result = size(rows, cfg, a.budget, prices, a.top)
         orders = orders_from(result, cfg, a.product or cfg.get("product", "CNC"), source)

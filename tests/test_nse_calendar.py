@@ -30,6 +30,22 @@ class Time(unittest.TestCase):
         with self.assertRaises(cal.CalendarError):
             ist("tomorrow")
 
+    def test_now_is_for_tests_only_on_a_live_run(self):
+        saved = os.environ.pop("TRADER_TEST_CLOCK", None)
+        try:
+            with self.assertRaises(cal.CalendarError) as cm:
+                cal.parse_now("2026-10-26T10:00")
+            self.assertIn("for tests only", str(cm.exception))
+            real = cal.parse_now().isoformat()
+            self.assertIsNotNone(cal.parse_now(real))
+            os.environ["TRADER_TEST_CLOCK"] = "1"
+            self.assertIsNotNone(cal.parse_now("2026-10-26T10:00"))
+        finally:
+            if saved is None:
+                os.environ.pop("TRADER_TEST_CLOCK", None)
+            else:
+                os.environ["TRADER_TEST_CLOCK"] = saved
+
 
 class Holidays(unittest.TestCase):
     def test_bundled_list_matches_the_nse_master(self):
