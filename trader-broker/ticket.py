@@ -1,48 +1,53 @@
 #!/usr/bin/env python3
 """Order tickets and the decision log for trader-broker. Standard library only.
 
-This tool never talks to a broker and never places anything. It does three
-things around the one moment that matters, your yes:
+This tool never talks to a broker and never places anything. Every order in
+this pack is a LIVE order with real money on your Zerodha account: Kite has
+no paper account. The tool does three things around the one moment that
+matters, your yes:
 
   show      renders each proposed order as a plain-English ticket plus the
-            exact JSON Claude will send to Alpaca's place_stock_order tool.
-            An order is READY only if trader-risk passed THIS exact order
-            today (matched by fingerprint) and nobody has decided on it yet.
+            exact arguments Claude will send to the Kite connector's
+            place_order tool. An order is READY only if trader-risk passed
+            THIS exact order (matched by fingerprint) in the last 10 minutes
+            and nobody has decided on it yet.
   approve   records your explicit yes for ONE order, with your reply word for
             word. It refuses "yes to all", "sure", "ok", a yes that names a
-            different stock or amount, and any order that is not READY.
+            different stock, quantity or price, and any order that is not READY.
   decline   records a no.
-  result    records what happened after the Allow once / Deny card:
-            placed (with the broker's order id), denied, or failed.
-  fill      adds a filled order to trader/portfolio.json as a tax lot.
+  result    records what happened after the Kite connector's approval card:
+            placed (with Kite's order id), denied, or failed.
   log       prints today's decisions.
 
     python3 ticket.py show                    # every order, READY or not
     python3 ticket.py show --index 1 --json   # one ticket as JSON
     python3 ticket.py approve --index 1 --reply "yes"
-    python3 ticket.py result --index 1 --status placed --broker-id 61e6...
-    python3 ticket.py fill --symbol AAPL --side buy --qty 3.6628 --price 341.27
+    python3 ticket.py result --index 1 --status placed --broker-id 261026000123456
     python3 ticket.py log
 
-Everything is written to trader/state/broker.json (append only).
+Everything is written to trader/state/broker.json (append only). Fills and
+holdings come from Kite itself (holdings and trades), not from this log.
 """
 
 import argparse
-import datetime
 import hashlib
 import json
 import os
 import re
 import sys
 
-ALPACA_FIELDS = ("symbol", "side", "qty", "notional", "type", "time_in_force", "limit_price",
-                 "stop_price", "trail_price", "trail_percent", "extended_hours", "client_order_id",
-                 "order_class", "take_profit_limit_price", "stop_loss_stop_price",
-                 "stop_loss_limit_price", "advanced_instructions")
-STRING_FIELDS = ("qty", "notional", "limit_price", "stop_price", "trail_price", "trail_percent",
-                 "take_profit_limit_price", "stop_loss_stop_price", "stop_loss_limit_price")
-TIF_WORDS = {"day": "good for today", "gtc": "good until canceled", "opg": "at the open",
-             "cls": "at the close", "ioc": "immediate or cancel", "fok": "fill or kill"}
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import nse_calendar
+from rupees import inr
+
+KITE_FIELDS = ("exchange", "tradingsymbol", "transaction_type", "quantity", "product", "order_type",
+               "price", "trigger_price", "validity", "variety")
+TOOL = "place_order"  # the Kite connector's order tool
+PRODUCT_WORDS = {"CNC": "delivery (CNC)", "MIS": "intraday (MIS)"}
+RISK_MAX_AGE = 600  # seconds: an older risk check has stale prices behind it
 YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}
 DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "stop", "but", "maybe", "later",
@@ -78,12 +83,8 @@ def write_json(path, data):
     os.replace(tmp, path)
 
 
-def now_iso():
-    return datetime.datetime.now().replace(microsecond=0).isoformat()
-
-
 def rec_day(rec):
-    """The trading day a decision belongs to: its "date" (the --today it was made under), else the day of "at"."""
+    """The trading day a decision belongs to: its "date", else the day of "at"."""
     return str(rec.get("date") or str(rec.get("at", ""))[:10])
 
 
@@ -91,66 +92,50 @@ def rec_day(rec):
 
 def fingerprint(order):
     """Same function as trader-risk/check.py: identifies the exact order."""
-    core = {k: order[k] for k in ALPACA_FIELDS if k in order and order[k] is not None}
+    core = {k: order[k] for k in KITE_FIELDS if k in order and order[k] is not None}
     blob = json.dumps(core, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _str_num(v):
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)):
-        f = float(v)
-        return str(int(f)) if f == int(f) else repr(f)
-    return str(v)
-
-
 def tool_input(order):
-    """The exact arguments for place_stock_order: Alpaca's parameter names,
-    numbers as strings (its signature types qty and notional as str)."""
-    out = {}
-    for k in ALPACA_FIELDS:
-        if k in order and order[k] is not None:
-            out[k] = _str_num(order[k]) if k in STRING_FIELDS else order[k]
-    return out
-
-
-def _money(v):
-    f = float(v)
-    s = "{:,.2f}".format(f)
-    return "$" + (s[:-3] if s.endswith(".00") else s)
+    """The exact arguments for the Kite connector's place_order tool: Kite's parameter names, as written."""
+    return {k: order[k] for k in KITE_FIELDS if k in order and order[k] is not None}
 
 
 def plain(order):
-    """BUY $1,250 of AAPL, market order, good for today"""
-    side = str(order.get("side", "")).upper()
-    sym = order.get("symbol", "?")
-    if order.get("notional") is not None:
-        what = "%s of %s" % (_money(order["notional"]), sym)
+    """BUY 6 shares of INFY, limit Rs 1,612.50, delivery (CNC), good for today"""
+    side = str(order.get("transaction_type", "")).upper()
+    q = str(order.get("quantity"))
+    what = "%s share%s of %s" % (q, "" if q == "1" else "s", order.get("tradingsymbol", "?"))
+    if str(order.get("order_type", "")).upper() == "LIMIT":
+        how = "limit %s" % inr(order.get("price"))
     else:
-        q = _str_num(order.get("qty"))
-        what = "%s share%s of %s" % (q, "" if q == "1" else "s", sym)
-    typ = str(order.get("type", "market"))
-    if typ == "limit":
-        how = "limit order at %s" % _money(order.get("limit_price"))
-    elif typ == "stop":
-        how = "stop order at %s" % _money(order.get("stop_price"))
-    elif typ == "stop_limit":
-        how = "stop %s, limit %s" % (_money(order.get("stop_price")), _money(order.get("limit_price")))
-    else:
-        how = "%s order" % typ.replace("_", " ")
-    tif = TIF_WORDS.get(str(order.get("time_in_force", "day")), order.get("time_in_force"))
-    return "%s %s, %s, %s" % (side, what, how, tif)
+        how = "at market"
+    product = PRODUCT_WORDS.get(str(order.get("product", "")).upper(), str(order.get("product")))
+    text = "%s %s, %s, %s, good for today" % (side, what, how, product)
+    if str(order.get("variety", "regular")).lower() == "amo":
+        text += ", after-market order"
+    return text
+
+
+def estimate(order):
+    """'estimated Rs 9,675 + Rs 11.49 charges = Rs 9,686.49 out' (a sale: proceeds less charges)."""
+    try:
+        value, cost = float(order["est_value"]), float(order.get("est_charges") or 0)
+    except (KeyError, TypeError, ValueError):
+        return ""
+    if str(order.get("transaction_type", "")).upper() == "SELL":
+        return "estimated %s - %s charges = %s in" % (inr(value), inr(cost), inr(value - cost))
+    return "estimated %s + %s charges = %s out" % (inr(value), inr(cost), inr(value + cost))
 
 
 def amount_numbers(order):
     nums = []
-    for k in ("notional", "qty", "limit_price"):
-        if order.get(k) is not None:
-            try:
-                nums.append(float(order[k]))
-            except (TypeError, ValueError):
-                pass
+    for k in ("quantity", "price", "est_value"):
+        try:
+            nums.append(float(order[k]))
+        except (KeyError, TypeError, ValueError):
+            pass
     return nums
 
 
@@ -168,9 +153,9 @@ def parse_yes(reply, order, batch_symbols=()):
         return False, "a yes covers one order at a time, not a batch"
     if DOUBT_WORDS & set(words[1:]):
         return False, "the reply has a condition or a doubt in it; ask again"
-    sym = str(order.get("symbol", "")).upper()
-    tokens = set(re.findall(r"[A-Z][A-Z.\-]{0,6}", raw.upper()))
-    others = {s.upper() for s in batch_symbols} - {sym}
+    sym = str(order.get("tradingsymbol", "")).upper()
+    tokens = set(re.findall(r"[A-Z][A-Z0-9&\-]{1,19}", raw.upper()))
+    others = {str(s).upper() for s in batch_symbols} - {sym}
     named = tokens & others
     if named:
         return False, "the reply names %s, but this order is for %s" % (", ".join(sorted(named)), sym)
@@ -179,7 +164,7 @@ def parse_yes(reply, order, batch_symbols=()):
         want = amount_numbers(order)
         if not any(abs(n - w) < 0.005 for n in nums for w in want):
             return False, "the reply says %s, but this order is %s" % (
-                ", ".join(_str_num(n) for n in nums), plain(order))
+                ", ".join("%g" % n for n in nums), plain(order))
     return True, "explicit yes for %s" % plain(order)
 
 
@@ -198,129 +183,85 @@ def latest(state, fp, today):
     return found
 
 
-def risk_verdict(risk, fp, today):
+def risk_verdict(risk, fp, now):
     if not risk:
         return None, "trader-risk has not checked these orders (run check.py)"
-    if risk.get("date") != today:
-        return None, "the risk check is from %s, not today; run check.py again" % risk.get("date")
+    try:
+        checked = nse_calendar.parse_now(risk.get("checked_at"))
+    except nse_calendar.CalendarError:
+        checked = None
+    if not risk.get("checked_at") or checked is None:
+        return None, "the risk check has no time on it; run check.py again"
+    age = (now - checked).total_seconds()
+    if age > RISK_MAX_AGE or age < -60:
+        return None, "the risk check is from %s, %d minutes ago; prices move, run check.py again" % (
+            risk["checked_at"], age // 60)
     for r in risk.get("results", []):
         if r.get("fingerprint") == fp:
             return r, None
     return None, "this exact order was not in the last risk check (it changed or is new); run check.py again"
 
 
-def status_of(order, risk, state, today):
+def status_of(order, risk, state, now):
     """(ready, label, risk_result)"""
     fp = fingerprint(order)
-    rv, why = risk_verdict(risk, fp, today)
+    rv, why = risk_verdict(risk, fp, now)
     if rv is None:
         return False, "NOT READY: " + why, None
     if rv.get("verdict") != "PASS":
         return False, "BLOCKED by trader-risk: " + "; ".join(rv.get("reasons", [])), rv
-    rec = latest(state, fp, today)
+    rec = latest(state, fp, now.date().isoformat())
     if rec:
         st = rec.get("status")
         if st == "approved":
-            return False, "APPROVED by you at %s, waiting for the place_stock_order call" % rec.get("at"), rv
+            return False, "APPROVED by you at %s, waiting for the %s call" % (rec.get("at"), TOOL), rv
         return False, "DONE: %s at %s" % (st, rec.get("at")), rv
     return True, "READY: trader-risk PASS, waiting for your yes", rv
 
 
 # ---------------------------------------------------------------- rendering
 
-def render(order, idx, total, cfg, risk, state, today):
-    ready, label, rv = status_of(order, risk, state, today)
-    broker = str(cfg.get("broker", "alpaca")).lower()
-    paper = cfg.get("paper", True)
-    acct = "PAPER account" if paper else "LIVE ACCOUNT, REAL MONEY"
-    lines = ["ORDER %d of %d, %s, %s" % (idx, total, acct, "Interactive Brokers" if broker == "ibkr" else "Alpaca"),
-             "  " + plain(order)]
+def render(order, idx, total, risk, state, now):
+    ready, label, rv = status_of(order, risk, state, now)
+    lines = ["ORDER %d of %d: LIVE ORDER, real money, Zerodha Kite" % (idx, total), "  " + plain(order)]
+    est = estimate(order)
+    if est:
+        lines.append("  " + est)
     if order.get("why"):
         lines.append("  why: " + order["why"])
     lines.append("  " + label)
     for w in (rv or {}).get("warnings", []):
         lines.append("  note: " + w)
-    if broker == "ibkr":
-        lines.append("  Claude drafts this with the Interactive Brokers connector. IBKR sends it to your")
-        lines.append("  IBKR account, and it only goes to the market after you approve it there.")
-    else:
-        lines.append("  Claude will call place_stock_order with exactly:")
-        for l in json.dumps(tool_input(order), indent=2).splitlines():
-            lines.append("    " + l)
+    lines.append("  Claude will call the Kite connector's %s tool with exactly:" % TOOL)
+    for line in json.dumps(tool_input(order), indent=2).splitlines():
+        lines.append("    " + line)
     if ready:
         lines.append("  Reply \"yes\" to place this one order, or \"no\" to skip it.")
-        if broker != "ibkr":
-            lines.append("  Claude's own card then asks again: Allow once places it, Deny stops it.")
+        lines.append("  The Kite connector's own approval card then asks again: approve places it, deny stops it.")
     return "\n".join(lines), ready
 
 
-def ticket_json(order, idx, cfg, risk, state, today):
-    ready, label, rv = status_of(order, risk, state, today)
-    return {"index": idx, "ready": ready, "status": label, "plain": plain(order),
-            "fingerprint": fingerprint(order), "paper": bool(cfg.get("paper", True)),
-            "broker": cfg.get("broker", "alpaca"), "tool": "place_stock_order",
+def ticket_json(order, idx, risk, state, now):
+    ready, label, rv = status_of(order, risk, state, now)
+    return {"index": idx, "ready": ready, "status": label, "plain": plain(order), "estimate": estimate(order),
+            "fingerprint": fingerprint(order), "live": True, "broker": "kite", "tool": TOOL,
             "tool_input": tool_input(order), "why": order.get("why", "")}
-
-
-# ---------------------------------------------------------------- fills -> lots
-
-def apply_fill(portfolio_path, cfg, symbol, side, qty, price, date):
-    """Record a filled order in trader/portfolio.json (a lot for a buy, FIFO for a sell)."""
-    pf = read_json(portfolio_path, "portfolio", required=False)
-    if pf is None:
-        budget = cfg.get("budget")
-        if not budget:
-            raise TicketError("no %s yet and no budget in the config to start it from" % portfolio_path)
-        pf = {"cash": float(budget), "positions": []}
-    symbol = symbol.upper()
-    qty, price = float(qty), float(price)
-    cost = round(qty * price, 2)
-    pos = None
-    for p in pf.setdefault("positions", []):
-        if str(p.get("ticker", "")).upper() == symbol:
-            pos = p
-    if side == "buy":
-        if pos is None:
-            pos = {"ticker": symbol, "shares": 0.0, "lots": []}
-            pf["positions"].append(pos)
-        lots = pos.setdefault("lots", [])
-        lots.append({"id": "%s-%d" % (symbol, len(lots) + 1), "date": date, "shares": qty, "cost": cost})
-        pos["shares"] = round(float(pos.get("shares", 0)) + qty, 6)
-        pf["cash"] = round(float(pf.get("cash", 0)) - cost, 2)
-    else:
-        if pos is None or float(pos.get("shares", 0)) + 1e-9 < qty:
-            raise TicketError("cannot record selling %s %s: the portfolio holds %s"
-                              % (qty, symbol, pos.get("shares", 0) if pos else 0))
-        left = qty
-        for lot in sorted(pos.get("lots", []), key=lambda l: l.get("date", "")):
-            if left <= 1e-9:
-                break
-            take = min(left, float(lot["shares"]))
-            per = float(lot["cost"]) / float(lot["shares"]) if float(lot["shares"]) else 0
-            lot["cost"] = round(float(lot["cost"]) - per * take, 2)
-            lot["shares"] = round(float(lot["shares"]) - take, 6)
-            left -= take
-        pos["lots"] = [l for l in pos.get("lots", []) if float(l["shares"]) > 1e-9]
-        pos["shares"] = round(float(pos["shares"]) - qty, 6)
-        if pos["shares"] <= 1e-9:
-            pf["positions"].remove(pos)
-        pf["cash"] = round(float(pf.get("cash", 0)) + cost, 2)
-    write_json(portfolio_path, pf)
-    return pf
 
 
 # ---------------------------------------------------------------- commands
 
 def _load(a):
-    doc = read_json(a.orders, "orders file (run trader-budget, trader-rebalance or trader-tax first)")
+    doc = read_json(a.orders, "orders file (run trader-budget first)")
     orders = doc.get("orders", doc) if isinstance(doc, dict) else doc
     if not isinstance(orders, list) or not orders:
         raise TicketError("no orders in %s" % a.orders)
-    cfg = read_json(a.config, "config", required=False) or {}
     risk = read_json(a.risk, "risk check", required=False)
     state = load_state(a.state)
-    today = a.today or datetime.date.today().isoformat()
-    return orders, cfg, risk, state, today
+    try:
+        now = nse_calendar.parse_now(a.now)
+    except nse_calendar.CalendarError as e:
+        raise TicketError(str(e))
+    return orders, risk, state, now
 
 
 def _pick(orders, index):
@@ -331,16 +272,24 @@ def _pick(orders, index):
     return orders[index - 1]
 
 
+def _record(order, index, now, status, **extra):
+    rec = {"at": now.replace(microsecond=0).isoformat(), "date": now.date().isoformat(), "index": index,
+           "fingerprint": fingerprint(order), "symbol": str(order.get("tradingsymbol", "")).upper(),
+           "side": str(order.get("transaction_type", "")).upper(), "plain": plain(order), "status": status}
+    rec.update(extra)
+    return rec
+
+
 def cmd_show(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, risk, state, now = _load(a)
     picks = [(a.index, _pick(orders, a.index))] if a.index else list(enumerate(orders, 1))
     if a.json:
-        out = [ticket_json(o, i, cfg, risk, state, today) for i, o in picks]
+        out = [ticket_json(o, i, risk, state, now) for i, o in picks]
         print(json.dumps(out[0] if a.index else out, indent=2))
         return 0 if any(t["ready"] for t in out) else 1
     blocks, any_ready = [], False
     for i, o in picks:
-        text, ready = render(o, i, len(orders), cfg, risk, state, today)
+        text, ready = render(o, i, len(orders), risk, state, now)
         blocks.append(text)
         any_ready = any_ready or ready
     print("\n\n".join(blocks))
@@ -350,81 +299,60 @@ def cmd_show(a):
 
 
 def cmd_approve(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, risk, state, now = _load(a)
     order = _pick(orders, a.index)
-    ready, label, rv = status_of(order, risk, state, today)
+    ready, label, rv = status_of(order, risk, state, now)
     if not ready:
         raise TicketError("order %d is not ready: %s" % (a.index, label))
-    ok, why = parse_yes(a.reply, order, [o.get("symbol", "") for o in orders])
+    ok, why = parse_yes(a.reply, order, [o.get("tradingsymbol", "") for o in orders])
     if not ok:
         print("Not recorded: %s. Ask the user again with the ticket for order %d." % (why, a.index))
         return 1
-    rec = {"at": now_iso(), "date": today, "index": a.index, "fingerprint": fingerprint(order),
-           "symbol": str(order.get("symbol", "")).upper(), "side": order.get("side"),
-           "plain": plain(order), "status": "approved", "reply": a.reply,
-           "paper": bool(cfg.get("paper", True)), "broker": cfg.get("broker", "alpaca")}
-    state.setdefault("orders", []).append(rec)
+    state.setdefault("orders", []).append(_record(order, a.index, now, "approved", reply=a.reply, live=True,
+                                                  broker="kite"))
     write_json(a.state, state)
     print("Recorded your yes for order %d: %s." % (a.index, plain(order)))
-    if str(cfg.get("broker", "alpaca")).lower() == "ibkr":
-        print("Now draft it with the Interactive Brokers connector; approve it in your IBKR account.")
-    else:
-        print("Now call place_stock_order with exactly:")
-        print(json.dumps(tool_input(order), indent=2))
-        print("Claude's card shows Allow once / Deny. Then: ticket.py result --index %d --status "
-              "placed|denied|failed" % a.index)
+    print("Now call the Kite connector's %s tool with exactly:" % TOOL)
+    print(json.dumps(tool_input(order), indent=2))
+    print("The connector's approval card asks again. Then: ticket.py result --index %d --status "
+          "placed|denied|failed --broker-id <Kite order id>" % a.index)
     return 0
 
 
 def cmd_decline(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, risk, state, now = _load(a)
     order = _pick(orders, a.index)
-    rec = {"at": now_iso(), "date": today, "index": a.index, "fingerprint": fingerprint(order),
-           "symbol": str(order.get("symbol", "")).upper(), "side": order.get("side"),
-           "plain": plain(order), "status": "declined", "reply": a.reply or "no"}
-    state.setdefault("orders", []).append(rec)
+    state.setdefault("orders", []).append(_record(order, a.index, now, "declined", reply=a.reply or "no"))
     write_json(a.state, state)
     print("Recorded: you said no to order %d (%s). Nothing was sent." % (a.index, plain(order)))
     return 0
 
 
 def cmd_result(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, risk, state, now = _load(a)
     order = _pick(orders, a.index)
-    fp = fingerprint(order)
-    rec = latest(state, fp, today)
+    rec = latest(state, fingerprint(order), now.date().isoformat())
     if not rec or rec.get("status") != "approved":
         raise TicketError("order %d has no yes recorded today; a result can only follow an approval" % a.index)
-    new = {"at": now_iso(), "date": today, "index": a.index, "fingerprint": fp, "symbol": rec["symbol"],
-           "side": rec["side"], "plain": rec["plain"], "status": a.status}
+    extra = {}
     if a.broker_id:
-        new["broker_order_id"] = a.broker_id
+        extra["broker_order_id"] = a.broker_id
     if a.note:
-        new["note"] = a.note
-    state["orders"].append(new)
+        extra["note"] = a.note
+    state["orders"].append(_record(order, a.index, now, a.status, **extra))
     write_json(a.state, state)
     print("Recorded order %d as %s." % (a.index, a.status))
-    if a.status == "placed" and a.filled_qty and a.filled_price:
-        apply_fill(a.portfolio, cfg, rec["symbol"], rec["side"], a.filled_qty, a.filled_price, today)
-        print("Added the fill to %s." % a.portfolio)
-    elif a.status == "placed":
-        print("When it fills, record it for trader-tax: ticket.py fill --symbol %s --side %s --qty Q --price P"
-              % (rec["symbol"], rec["side"]))
-    return 0
-
-
-def cmd_fill(a):
-    cfg = read_json(a.config, "config", required=False) or {}
-    date = a.date or datetime.date.today().isoformat()
-    pf = apply_fill(a.portfolio, cfg, a.symbol, a.side, a.qty, a.price, date)
-    print("Recorded %s %s %s at %s on %s. Cash now %s." % (a.side, a.qty, a.symbol.upper(),
-                                                          _money(a.price), date, _money(pf["cash"])))
+    if a.status == "placed":
+        print("Kite's holdings and trades are the record of the fill: refresh those snapshots before the next check.")
     return 0
 
 
 def cmd_log(a):
     state = load_state(a.state)
-    today = a.today or datetime.date.today().isoformat()
+    try:
+        today = nse_calendar.parse_now(a.now).date().isoformat()
+    except nse_calendar.CalendarError as e:
+        raise TicketError(str(e))
     rows = [r for r in state.get("orders", []) if a.all or rec_day(r) == today]
     if not rows:
         print("No decisions recorded%s." % ("" if a.all else " today"))
@@ -439,15 +367,14 @@ def cmd_log(a):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Order tickets and your yes (trader-broker). Never places orders.")
+    ap = argparse.ArgumentParser(description="LIVE order tickets and your yes (trader-broker). Never places orders.")
     sub = ap.add_subparsers(dest="cmd")
 
     def common(p):
         p.add_argument("--orders", default="trader/orders.json")
-        p.add_argument("--config", default="trader/config.json")
         p.add_argument("--risk", default="trader/state/risk.json")
         p.add_argument("--state", default="trader/state/broker.json")
-        p.add_argument("--today", help="YYYY-MM-DD (default: today)")
+        p.add_argument("--now", help="pretend it is this time (ISO; no offset = IST)")
 
     p = sub.add_parser("show", help="render the tickets")
     common(p)
@@ -461,26 +388,15 @@ def main(argv=None):
     common(p)
     p.add_argument("--index", type=int, required=True)
     p.add_argument("--reply")
-    p = sub.add_parser("result", help="record what happened after the Allow once / Deny card")
+    p = sub.add_parser("result", help="record what happened after the Kite approval card")
     common(p)
     p.add_argument("--index", type=int, required=True)
     p.add_argument("--status", required=True, choices=["placed", "denied", "failed"])
-    p.add_argument("--broker-id")
+    p.add_argument("--broker-id", help="Kite's order id")
     p.add_argument("--note")
-    p.add_argument("--filled-qty")
-    p.add_argument("--filled-price")
-    p.add_argument("--portfolio", default="trader/portfolio.json")
-    p = sub.add_parser("fill", help="add a filled order to trader/portfolio.json")
-    p.add_argument("--symbol", required=True)
-    p.add_argument("--side", required=True, choices=["buy", "sell"])
-    p.add_argument("--qty", required=True)
-    p.add_argument("--price", required=True)
-    p.add_argument("--date")
-    p.add_argument("--portfolio", default="trader/portfolio.json")
-    p.add_argument("--config", default="trader/config.json")
     p = sub.add_parser("log", help="today's decisions")
     p.add_argument("--state", default="trader/state/broker.json")
-    p.add_argument("--today")
+    p.add_argument("--now")
     p.add_argument("--all", action="store_true")
     a = ap.parse_args(argv)
     if not a.cmd:
@@ -488,7 +404,7 @@ def main(argv=None):
         return 1
     try:
         return {"show": cmd_show, "approve": cmd_approve, "decline": cmd_decline, "result": cmd_result,
-                "fill": cmd_fill, "log": cmd_log}[a.cmd](a)
+                "log": cmd_log}[a.cmd](a)
     except TicketError as e:
         print("ticket.py: %s" % e, file=sys.stderr)
         return 1
