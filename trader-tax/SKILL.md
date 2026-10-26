@@ -1,101 +1,113 @@
 ---
 name: trader-tax
 description: >-
-  Tax Optimizer. Tracks cost-basis lots for every position (FIFO, highest
-  cost first, or specific lots), shows unrealized gains and losses by lot with
-  short or long term, works out what a sale would realize before you sell,
-  finds tax-loss harvesting candidates over a loss threshold, checks the wash
-  sale rule (30 days before and after, GOOG and GOOGL as one family), and
-  writes harvest sells only as proposals. Not tax advice. Use when the user
-  says "what are my gains", "cost basis", "tax lots", "tax-loss harvest",
-  "what would selling cost me in tax", "short or long term", "wash sale", or
-  before selling anything.
-argument-hint: "[ticker]"
+  Tax Optimizer for Indian listed equity. Builds FIFO lots from your Zerodha
+  Console tradebook, today's Kite trades and your opening lots, separates
+  intraday round trips (speculative income) from delivery, and works out
+  short-term (12 months or less) and long-term gains with the 31 Jan 2018
+  grandfathering rule. Per financial year it sets off losses in the right
+  order, applies the Rs 1,25,000 LTCG exemption, carries losses forward and
+  estimates the tax. It shows what a sale would realise, finds losses to book
+  and long-term gains that still fit the exemption, and writes harvest sells
+  as LIVE proposals. Not tax advice. Use when the user says "what are my
+  gains", "capital gains", "STCG", "LTCG", "tax harvest", "what would
+  selling cost me in tax", "how much exemption is left", or before selling.
+argument-hint: "[symbol]"
 ---
 
 # trader-tax
 
-The Tax Optimizer does the arithmetic on the user's lots so nobody sells
-blind. It never decides what is right for the user's taxes. **This is not tax
-advice**: a tax professional decides what applies to them. Say that once,
-early, in every answer that uses this skill.
+The Tax Optimizer does the arithmetic on your trades so you can see the tax
+side of a sale before you make it. It is not tax advice: rates change, your
+slab and other income matter, and a tax professional decides what applies.
 
 `${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/lots.py" report --lots              # every lot, gain or loss, term
-python3 "${CLAUDE_SKILL_DIR}/lots.py" sell KO 2 --price 90.11    # what a sale would realize (FIFO)
-python3 "${CLAUDE_SKILL_DIR}/lots.py" sell KO 2 --method specific --lots KO-2
-python3 "${CLAUDE_SKILL_DIR}/lots.py" harvest --min-loss 100     # candidates, with wash-sale checks
-python3 "${CLAUDE_SKILL_DIR}/lots.py" harvest --min-loss 100 --write
-python3 "${CLAUDE_SKILL_DIR}/lots.py" wash KO                    # is buying KO today a wash sale?
+python3 "${CLAUDE_SKILL_DIR}/lots.py" report                    # open lots, unrealised gain by term
+python3 "${CLAUDE_SKILL_DIR}/lots.py" gains                     # per financial year
+python3 "${CLAUDE_SKILL_DIR}/lots.py" gains --fy 2026-27
+python3 "${CLAUDE_SKILL_DIR}/lots.py" sell INFY 4               # what selling 4 INFY now would realise
+python3 "${CLAUDE_SKILL_DIR}/lots.py" harvest --min-loss 1000   # losses to book, exemption headroom
+python3 "${CLAUDE_SKILL_DIR}/lots.py" harvest --write           # loss-harvest sells -> trader/orders.json
 ```
 
-## What it reads and writes
+## Where the trades come from
+
+Kite's API only returns today's trades, so the history comes from files:
 
 | file | what |
 | --- | --- |
-| `trader/portfolio.json` | positions with lots: `{"id", "date", "shares", "cost"}` (cost = total basis); shape: `portfolio.example.json` here |
-| `trader/prices.json` | current prices (trader-alerts: `alerts.py quote --holdings --write`) |
-| `trader/orders.json` | planned buys count for wash sales; `harvest --write` replaces it with sell proposals |
-| `trader/state/tax.json` | the realized sales it logs with `sell --record` |
+| `trader/tradebook-<year>.csv` | Zerodha Console > Reports > Tradebook > Equity, downloaded as CSV (one per year is fine) |
+| `trader/lots.csv` | holdings bought before the tradebook starts: `date,symbol,quantity,price` |
+| `trader/fmv_2018.csv` | `symbol,fmv`: the 31 Jan 2018 price of any stock bought before 2018-02-01 |
+| `trader/kite/trades.json` | today's Kite trades (`kite_snapshot.py save trades`) |
+| `trader/kite/holdings.json` | Kite holdings, to check that the lots add up |
+| `trader/kite/quotes.json` | Kite quotes, for unrealised gains and harvest prices |
 
-Lots come from the fills trader-broker records (`ticket.py fill`), or from the
-user's broker statement. If a position has shares but no lots, ask for the
-purchase dates and costs. Never invent a cost basis.
+If the lots do not match Kite's holdings, the report says which stock and
+by how much: an earlier tradebook or a line in lots.csv is missing.
+Splits, bonuses and other corporate actions are not in any tradebook, so a
+stock that had one shows up as a mismatch, and its gains are off until the
+user adjusts its lines in lots.csv by hand. Say so whenever it happens.
 
-## The rules it applies (US federal, arithmetic only)
+## The rules it applies
 
-- **Term**: long term if sold more than one year after the purchase date,
-  otherwise short term. `report --lots` shows the date each lot turns long term.
-- **Lot methods**: `fifo` (oldest first, what most brokers do by default),
-  `hifo` (highest cost first) and `specific` (named lots). The order sent to
-  the broker does not carry lot ids: to sell specific lots the user must
-  choose them in the broker's own tax-lot setting, or the broker uses its
-  default method.
-- **Wash sale**: a loss is disallowed to the extent the same or a
-  substantially identical stock is bought within 30 days before or after the
-  sale. The tool checks the other lots still held, planned buys in
-  `trader/orders.json` and the loss sales it has logged. It cannot see an IRA,
-  a spouse's account or another broker, and those count too. Say so.
+- **Intraday**: shares of a stock bought and sold on the same day are
+  speculative business income (your slab rate), kept separate.
+- **FIFO**: other sales close the oldest lots first, as demat accounts do.
+- **Term**: held more than 12 months is long term. Bought 2025-01-10, sold
+  2026-01-10 is short term; sold 2026-01-11 is long term.
+- **2018 rule**: for shares bought before 2018-02-01, a long-term sale uses
+  the higher of the actual cost and the 31 Jan 2018 price, capped at the
+  sale price.
+- **Rates** (defaults, change them under `"tax_rules"` in trader/config.json):
+  STCG 20%, LTCG 12.5% above Rs 1,25,000 a year. Estimates start from FY
+  2025-26; earlier years had other rates. Check the rates every year: the
+  Income-tax Act 2025 applies from 1 April 2026.
+- **Set-off**: short-term loss against short-term then long-term gain;
+  long-term loss only against long-term gain; speculative loss only against
+  speculative income. What is left carries forward 8 years (4 for
+  speculative), only if that year's return was filed on time.
+- **No wash-sale rule** in India: a loss stays a loss if you buy back, but
+  the new shares start a new 12-month clock.
 
 ## Steps
 
-1. Refresh prices, then `lots.py report --lots`. Show gains and losses by
-   stock, and which lots are short or long term.
-2. Before any sell (rebalance, a stop, a change of mind), run `lots.py sell`
-   with the planned shares and method and show what it would realize.
-3. For harvesting: `lots.py harvest --min-loss 100` (and `--min-pct` if the
-   user wants a percent threshold). For each candidate show the estimated
-   loss, short and long term split, any wash-sale conflict, and the first day
-   they could buy it back. Candidates with a conflict are not proposed.
-4. Only if the user wants proposals: `harvest --write`, then `/trader-risk`,
-   then `/trader-broker`, one yes per order.
-5. After a sale fills, `lots.py sell ... --record` updates the lots and logs
-   the realized result for the year.
+1. Ask the user to download their Console tradebook(s) into `trader/`.
+2. Refresh the trades, holdings and quotes snapshots from Kite.
+3. Run `report` and `gains` and explain them in plain words.
+4. Before any sell from another skill, run `sell SYMBOL QTY`.
+5. For harvesting, run `harvest` and explain each candidate. Only with the
+   user's agreement, run `harvest --write` (add `--include-gains` for the
+   long-term gains inside the exemption), then `/trader-risk` and
+   `/trader-broker`, one yes per order.
+   Harvest skips any stock whose lots do not match Kite's holdings, never
+   proposes a cut-down sale that would book the opposite of what it says
+   (the oldest shares go first), and `--write` needs a fresh holdings
+   snapshot.
 
-## Example: the reel's portfolio
+## Example
 
-The copy portfolio bought on 2026-10-13 (AAPL $1,250, AXP $1,119, GOOGL $823,
-KO $708, BAC $600) has one lot per stock, all short term until 2027-10-14.
-If BAC later trades below its $600 basis, `harvest --min-loss 25` lists the
-BAC-1 lot with its loss and "do not buy BAC again before" a date 31 days
-after the sale. If the user also has a BAC buy planned in `trader/orders.json`,
-it flags a wash sale instead of proposing the sell.
+With the sample trades, FY 2025-26 has a short-term gain of Rs 750, a
+short-term loss of Rs 400 and a long-term gain of Rs 510: estimated tax
+Rs 70 (20% of the net Rs 350; the Rs 510 is inside the exemption). An
+intraday loss of Rs 100 in FY 2024-25 carries forward and Rs 20 of it is
+used against FY 2026-27 intraday income.
 
 ## What it never does
 
-It never files anything, never gives a tax rate or a tax bill, never tells
-the user what they owe, never places an order, and never proposes a harvest
-that it can see would be a wash sale.
+It never files or calculates a return, never claims a rate is current
+without telling the user to check it, and never sells anything itself.
 
 ## Safety
 
-- Not tax advice, and education and tooling, not financial advice. Check with a tax professional.
-- Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
-- Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
-  user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
-  (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
-- No options, margin, short selling or leverage unless the config allows it and the user confirms.
-- Broker keys live in environment variables or the Claude Desktop config, never in the chat.
+- Education and tooling, not financial advice. Nothing here is a recommendation to buy or sell.
+- Every order in this pack is a LIVE order with real money on your Zerodha account: Kite has no paper account.
+- Nothing in this pack places an order except through trader-broker, and only when all three hold:
+  trader-risk passed that exact order in the last 10 minutes, the user typed an explicit yes for that
+  one order in the chat, and the user approved the Kite connector's order card because its order tool
+  is set to "Needs approval". Never set an order tool to "Always allow".
+- No F&O, no NRML, no stop-loss orders. MIS (intraday), MARKET orders, short selling and after-market
+  orders stay off unless the user turns them on in trader/config.json themselves.
+- Kite logins live in the connector, never in the chat or in files.

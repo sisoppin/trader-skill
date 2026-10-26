@@ -109,7 +109,7 @@ class Repo(unittest.TestCase):
             self.assertEqual(len(texts), 1, "copies of %s differ: %s" % (name, copies))
 
     def test_converted_order_path_skills_say_live(self):
-        for s in ("trader-budget", "trader-risk", "trader-broker"):
+        for s in ("trader-budget", "trader-risk", "trader-broker", "trader-rebalance", "trader-tax"):
             _, text = frontmatter(os.path.join(ROOT, s, "SKILL.md"))
             low = " ".join(text.lower().split())
             self.assertIn("live", low, s)

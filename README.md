@@ -62,9 +62,9 @@ environment variable.
 | `/trader-screener` | Stock Screener | Screens companies against your own rules and ranks what passes. |
 | `/trader-risk` | Risk Manager | Checks every LIVE order against your limits and fresh Kite data (hours, price band, cash, intraday rules) and blocks anything over them. |
 | `/trader-broker` | Order Executor | Turns an approved order into the exact ticket the Kite connector receives, marked LIVE, and records your yes. It never places anything itself. |
-| `/trader-tax` | Tax Optimizer | Tracks cost-basis lots, gains and losses, tax-loss harvesting candidates and wash sales. |
+| `/trader-tax` | Tax Optimizer | Builds FIFO lots from your Zerodha tradebook and works out STCG, LTCG and intraday income per financial year, with set-off, the yearly exemption and harvesting ideas. |
 | `/trader-alerts` | Price Alerts | Rings when a price target, a stop, the opening bell or the MIS square-off hits, with the real NSE calendar and Kite quotes. |
-| `/trader-rebalance` | Rebalancer | Brings the portfolio back to its target weights when it drifts past your band. |
+| `/trader-rebalance` | Rebalancer | Brings the portfolio back to its target weights from your Kite holdings when it drifts past your band, in whole shares. |
 
 ## How to use it
 
@@ -121,7 +121,7 @@ python3 trader-screener/screen.py trader/metrics.json --rules trader/rules.json
 python3 trader-budget/size.py --budget 50000 --write                   # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
 python3 trader-broker/ticket.py show                                   # the tickets, READY or not
-python3 trader-tax/lots.py harvest --min-loss 100                      # with wash-sale checks
+python3 trader-tax/lots.py harvest --min-loss 1000                     # losses to book, exemption left
 python3 trader-alerts/alerts.py clock                                  # NSE open or closed
 python3 trader-rebalance/rebalance.py --band 5                         # the drift table
 ```
@@ -165,7 +165,7 @@ filed in. It has no access to anything that is not public.
 RSS and Yahoo Finance's chart endpoint (unofficial, and it can change). Check
 anything that matters against your broker before you act on it.
 
-**Taxes.** `/trader-tax` does the arithmetic on lots and wash-sale windows. It
+**Taxes.** `/trader-tax` does the arithmetic on lots, terms and set-off for Indian listed equity. It
 is not tax advice.
 
 ## Files
@@ -179,7 +179,7 @@ trader-analyst/    SKILL.md, facts.py, metrics.example.json
 trader-screener/   SKILL.md, screen.py, rules.example.json
 trader-risk/       SKILL.md, check.py
 trader-broker/     SKILL.md, ticket.py
-trader-tax/        SKILL.md, lots.py, portfolio.example.json
+trader-tax/        SKILL.md, lots.py, tradebook.py, ledger.py, india_tax.py
 trader-alerts/     SKILL.md, alerts.py, alerts.example.json
 trader-rebalance/  SKILL.md, rebalance.py
 tests/             unittest suite + offline fixtures
