@@ -45,6 +45,8 @@ Kite's API only returns today's trades, so the history comes from files:
 | `trader/kite/holdings.json` | Kite holdings, to check that the lots add up |
 | `trader/kite/quotes.json` | Kite quotes, for unrealised gains and harvest prices |
 
+Overlapping downloads are fine: a trade that appears in two files (same trade id, date and symbol) counts once, and one that appears twice with different details stops the run with an error naming both files.
+
 If the lots do not match Kite's holdings, the report says which stock and
 by how much: an earlier tradebook or a line in lots.csv is missing.
 Splits, bonuses and other corporate actions are not in any tradebook, so a

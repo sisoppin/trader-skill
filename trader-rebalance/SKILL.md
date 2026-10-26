@@ -76,7 +76,7 @@ refused. Never type prices or holdings in by hand.
 
 ## Steps
 
-1. Refresh the four Kite snapshots.
+1. Refresh the five Kite snapshots (holdings, positions, margins, quotes, orders).
 2. Run `rebalance.py` and explain the drift table in plain words: which
    stocks are over or under, by how many points, and what it would trade.
 3. Before any sell, run trader-tax (`lots.py sell SYMBOL QTY`) and show what
