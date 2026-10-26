@@ -9,16 +9,26 @@ applies to you.
     python3 lots.py gains --fy 2026-27
     python3 lots.py sell INFY 4                  # what selling 4 INFY now would realise (FIFO)
     python3 lots.py harvest --min-loss 1000      # losses to book, and LTCG headroom
-    python3 lots.py harvest --write              # loss-harvest sells -> trader/orders.json (needs fresh holdings;
-                                                 # --include-gains adds long-term gain sells; removes the file if none)
+    python3 lots.py harvest --write              # loss-harvest sells -> trader/orders.json (needs fresh holdings
+                                                 # and orders; --include-gains adds long-term gain sells;
+                                                 # removes the old file if there is nothing to propose or it fails)
 
 Inputs (see tradebook.py):
   trader/tradebook*.csv   Zerodha Console equity tradebooks (all your history)
   trader/lots.csv         opening lots bought before the tradebook starts
   trader/fmv_2018.csv     31 Jan 2018 prices for shares bought before 2018-02-01
-  trader/kite/trades.json today's Kite trades (kite_snapshot.py save trades)
+  trader/kite/trades.json today's Kite trades (kite_snapshot.py save trades); used only if saved today
   trader/kite/holdings.json   Kite holdings, to check the lots add up
+  trader/kite/positions.json  today's delivery (CNC) trades, added to the holdings for that check
+  trader/kite/orders.json     Kite's order book: harvest skips a stock with an open order
   trader/kite/quotes.json     Kite quotes, for unrealised gains
+
+A sale "today" (sell, harvest) is worked out by adding it to your trades, so
+shares you bought today are matched intraday first. Harvest measures each
+proposal with the full set-off for this financial year: a loss is proposed
+only if it saves tax this year or carries forward, and a long-term gain only
+if it adds no tax and uses up no carried or current loss. Stocks on your
+blocked list (config "blocked") or with an open order are never proposed.
 
 The rules are in ledger.py (lots, terms, the 2018 rule) and india_tax.py
 (financial years, set-off, exemption, carry-forward). India has no wash-sale
@@ -48,6 +58,8 @@ from rupees import inr
 NOT_ADVICE = ("Not tax advice: arithmetic on your trades. Check the rates each year and ask a tax professional "
               "what applies to you. Education and tooling, not financial advice.")
 KIND_WORDS = {"STCG": "short term", "LTCG": "long term", "SPECULATIVE": "intraday (speculative)"}
+FINISHED = ("COMPLETE", "REJECTED", "CANCELLED")
+NO_POSITIONS = "today's delivery trades are not checked (no positions snapshot)"
 
 
 class TaxError(Exception):
@@ -88,16 +100,24 @@ def load_inputs(a):
         skipped += n
     if skipped:
         notes.append("%d non-equity or non-NSE tradebook rows skipped (F&O, BSE, ...)" % skipped)
+    now = _now(a)
     try:
-        lists.append(tradebook.kite_trades(kite_snapshot.load("trades", a.kite_dir, now=_now(a), max_age=86400)))
+        data = kite_snapshot.load("trades", a.kite_dir, now=now, max_age=float("inf"))
+        saved = (now - datetime.timedelta(seconds=kite_snapshot.age("trades", a.kite_dir, now))).date()
+        if saved == now.date():
+            lists.append(tradebook.kite_trades(data))
+        else:
+            notes.append("today's Kite trades are not included (the snapshot is from %s)" % saved)
     except kite_snapshot.SnapshotError as e:
         notes.append("today's Kite trades are not included (%s)" % e)
     if not lists:
         raise TaxError("no trades: download your Zerodha Console tradebook to trader/tradebook-<year>.csv "
                        "(or pass --tradebook), and put older holdings in trader/lots.csv")
     fmv = tradebook.read_fmv(a.fmv) if a.fmv and os.path.exists(a.fmv) else {}
-    book = ledger.build(tradebook.merge(*lists), fmv)
+    trades = tradebook.merge(*lists)
+    book = ledger.build(trades, fmv)
     book["fmv"] = fmv
+    book["trades"] = trades
     return {"book": book, "notes": notes + book["problems"], "cfg": _config(a.config)}
 
 
@@ -111,7 +131,8 @@ def quote_prices(kite_dir, now=None):
 
 def holdings_check(lots, kite_dir, now=None):
     """(warnings, {symbol: (trades_qty, kite_qty)}, error): where the lots do not match Kite's holdings
-    (quantity + T1). error is set when the holdings snapshot is missing or stale."""
+    (quantity + T1, plus today's CNC net positions when a fresh positions snapshot exists). error is set
+    when the holdings snapshot is missing or stale."""
     try:
         hold = kite_snapshot.load("holdings", kite_dir, now=now)
     except kite_snapshot.SnapshotError as e:
@@ -120,6 +141,14 @@ def holdings_check(lots, kite_dir, now=None):
     for r in hold if isinstance(hold, list) else []:
         sym = str(r.get("tradingsymbol", "")).upper()
         kite[sym] = kite.get(sym, 0) + int(float(r.get("quantity") or 0) + float(r.get("t1_quantity") or 0))
+    try:
+        pos = kite_snapshot.load("positions", kite_dir, now=now)
+    except kite_snapshot.SnapshotError:
+        pos = None
+    for r in ((pos or {}).get("net") or []) if isinstance(pos, dict) else []:
+        if r.get("product") == "CNC":
+            sym = str(r.get("tradingsymbol", "")).upper()
+            kite[sym] = kite.get(sym, 0) + int(float(r.get("quantity") or 0))
     mine = {s: sum(l["qty"] for l in ls) for s, ls in lots.items()}
     out, bad = [], {}
     for s in sorted(set(kite) | set(mine)):
@@ -127,6 +156,8 @@ def holdings_check(lots, kite_dir, now=None):
             bad[s] = (mine.get(s, 0), kite.get(s, 0))
             out.append("%s: the trades give %d shares but Kite holds %d; the tradebook or lots.csv is incomplete"
                        % (s, mine.get(s, 0), kite.get(s, 0)))
+    if pos is None:
+        out.append(NO_POSITIONS)
     return out, bad, None
 
 
@@ -221,7 +252,7 @@ def cmd_sell(a):
     price = a.price if a.price is not None else quote_prices(a.kite_dir, _now(a)).get(sym)
     if not price:
         raise TaxError("no Kite quote for NSE:%s: add it to the quotes call, or pass --price" % sym)
-    gains, short = ledger.what_if(lots, a.qty, price, _today(a), inp["book"]["fmv"])
+    gains, short = ledger.sale_effect(inp["book"]["trades"], sym, a.qty, price, _today(a), inp["book"]["fmv"])
     if short:
         raise TaxError("you hold only %d %s by the trades" % (a.qty - short, sym))
     if a.json:
@@ -238,34 +269,128 @@ def cmd_sell(a):
     return 0
 
 
-def harvest(lots, prices, today, years, min_loss, fmv=None, exemption=125000.0, skip=()):
-    """(losses, gains): selling a whole position that books at least min_loss of loss, and long-term gains
-    that still fit this FY's unused exemption. A symbol is never in both, and symbols in skip are left out."""
+def fy_row(book, extra_gains, fy, tax_rules=None):
+    """This financial year's india_tax.summarise row after adding extra_gains (realised or speculative) to
+    the book. A zero placeholder gain makes sure the year has a row, so losses carried into a year with no
+    sales yet still count."""
+    start = datetime.date(int(fy[:4]), 4, 1)
+    realised = list(book["realised"]) + [g for g in extra_gains if g["kind"] != "SPECULATIVE"]
+    spec = list(book["speculative"]) + [g for g in extra_gains if g["kind"] == "SPECULATIVE"]
+    realised.append({"kind": "STCG", "sold": start, "gain": 0.0})
+    for y in india_tax.summarise(realised, spec, tax_rules):
+        if y["fy"] == fy:
+            return y
+    return None
+
+
+def effect(book, extra_gains, fy, tax_rules=None):
+    """(estimate_total, carry_total) for financial year fy after adding extra_gains: the estimated tax that
+    year (0 when there is no estimate) and the losses still carried forward at its end."""
+    y = fy_row(book, extra_gains, fy, tax_rules)
+    if not y:
+        return 0.0, 0.0
+    return (y["estimate"] or {}).get("total", 0.0), round(sum(c["amount"] for c in y["carry_forward"]), 2)
+
+
+def _max_value(cfg):
+    try:
+        return float(cfg.get("max_order_value", 10000) or 0)
+    except (TypeError, ValueError):
+        raise TaxError("config max_order_value must be a number of rupees")
+
+
+def _cut(sym, qty, price, max_value, notes):
+    """qty cut to max_order_value (trader-risk blocks bigger orders), or None when not even one share fits."""
+    if qty < 1:
+        return None
+    if max_value and qty * price > max_value:
+        qty = int(max_value // price)
+        if qty < 1:
+            notes.append("%s: one share costs more than your max order; not proposed" % sym)
+            return None
+    return qty
+
+
+def _sell(sym, qty, price, cfg, why):
+    value = qty * price
+    est = charges.estimate("CNC", "SELL", value, cfg.get("charges"))
+    return {"exchange": "NSE", "tradingsymbol": sym, "transaction_type": "SELL", "quantity": str(qty),
+            "product": "CNC", "order_type": "LIMIT", "price": "%.2f" % price, "validity": "DAY",
+            "variety": "regular", "est_value": "%.2f" % value, "est_charges": "%.2f" % est["total"], "why": why}
+
+
+def _total(gains):
+    return round(sum(g["gain"] for g in gains), 2)
+
+
+def harvest(book, prices, today, min_loss, cfg, notes, skip=(), tax_rules=None):
+    """{"losses", "gains", "loss_orders", "gain_orders", "loss_candidates"} for this financial year, each
+    sale worked out by adding it to the trades (ledger.sale_effect: intraday first, then the oldest lots)
+    and measured with the full set-off (india_tax.summarise).
+
+    Losses: selling a whole position that books at least min_loss, cut to max_order_value. Proposed only if
+    it saves tax this year or adds to the loss carried forward. Gains: long-term lots, oldest first, sized
+    to the exemption left, cut to max_order_value, then one share less at a time until the sale adds no tax
+    and uses up no carried or current loss. A symbol is never in both, and symbols in skip are left out."""
     fy = india_tax.fy_of(today)
-    this = [y for y in years if y["fy"] == fy]
-    left = this[0]["exemption_left"] if this else exemption
-    losses, gains = [], []
-    for sym in sorted(lots):
-        if sym not in prices or sym in skip:
+    max_value = _max_value(cfg)
+    trades, fmv = book["trades"], book["fmv"]
+    base_tax, base_carry = effect(book, [], fy, tax_rules)
+    losses, loss_orders, extra, taken = [], [], [], set()
+    for sym in sorted(book["lots"]):
+        if sym in skip:
             continue
-        qty = sum(l["qty"] for l in lots[sym])
-        res, _ = ledger.what_if(lots[sym], qty, prices[sym], today, fmv)
-        net = sum(g["gain"] for g in res)
-        if net < 0 and -net >= min_loss:
-            by_term = {k: round(sum(g["gain"] for g in res if g["kind"] == k), 2) for k in ("STCG", "LTCG")}
-            losses.append({"symbol": sym, "qty": qty, "price": prices[sym], "loss": round(-net, 2),
-                           "by_term": by_term})
-            left -= max(0.0, by_term["LTCG"])
-    left = max(0.0, left)
-    taken = set(c["symbol"] for c in losses)
-    for sym in sorted(lots):
-        if left <= 0:
-            break
+        if sym not in prices:
+            notes.append("%s: no Kite quote, skipped" % sym)
+            continue
+        price = prices[sym]
+        full = sum(l["qty"] for l in book["lots"][sym])
+        res = ledger.sale_effect(trades, sym, full, price, today, fmv)[0]
+        net = _total(res)
+        if not (net < 0 and -net >= min_loss):
+            continue
+        taken.add(sym)
+        qty = _cut(sym, full, price, max_value, notes)
+        if qty is None:
+            continue
+        if qty < full:
+            res = ledger.sale_effect(trades, sym, qty, price, today, fmv)[0]
+            net = _total(res)
+            if net > -min_loss:
+                notes.append("%s: selling only %d of %d (to stay under your max order) would book %s because the "
+                             "oldest shares go first; not proposed"
+                             % (sym, qty, full, "a gain of %s" % inr(net) if net > 0
+                                else "a loss of only %s" % inr(-net)))
+                continue
+        new_tax, new_carry = effect(book, res, fy, tax_rules)
+        saved, carried = round(base_tax - new_tax, 2), round(new_carry - base_carry, 2)
+        if saved <= 0.005 and carried <= 0.005:
+            notes.append("%s: booking this loss saves no tax this year (it would only offset gains already inside "
+                         "the exemption) and nothing would carry forward; not proposed" % sym)
+            continue
+        if qty < full:
+            notes.append("%s: selling %d of %d now keeps the order under your %s max order; sell the rest later"
+                         % (sym, qty, full, inr(max_value)))
+        parts = (["saves about %s this year" % inr(saved)] if saved > 0.005 else []) \
+            + (["%s carries forward" % inr(carried)] if carried > 0.005 else [])
+        losses.append({"symbol": sym, "qty": qty, "price": price, "loss": round(-net, 2),
+                       "by_term": {k: round(sum(g["gain"] for g in res if g["kind"] == k), 2)
+                                   for k in ("STCG", "LTCG", "SPECULATIVE")},
+                       "saves": saved, "carries": carried})
+        loss_orders.append(_sell(sym, qty, price, cfg, "book a %s loss (%s)" % (inr(-net), ", ".join(parts))))
+        extra += res
+
+    gains, gain_orders = [], []
+    for sym in sorted(book["lots"]):
         if sym not in prices or sym in skip or sym in taken:
             continue
+        price = prices[sym]
+        base_tax, base_carry = effect(book, extra, fy, tax_rules)
+        y = fy_row(book, extra, fy, tax_rules)
+        left = max(0.0, y["exemption_left"] if y else india_tax.rules(tax_rules)["ltcg_exemption"])
         n, booked = 0, 0.0
-        for lot in lots[sym]:
-            g = ledger.close(lot, lot["qty"], prices[sym], today, fmv)
+        for lot in book["lots"][sym]:
+            g = ledger.close(lot, lot["qty"], price, today, fmv)
             if g["kind"] != "LTCG" or g["gain"] <= 0:
                 break
             per = g["gain"] / lot["qty"]
@@ -275,51 +400,51 @@ def harvest(lots, prices, today, years, min_loss, fmv=None, exemption=125000.0, 
                 booked += fit * per
             if fit < lot["qty"]:
                 break
-        if n > 0:
-            gains.append({"symbol": sym, "qty": n, "price": prices[sym], "gain": round(booked, 2)})
-            left -= booked
-    return losses, gains
-
-
-def sell_orders(cands, lots, today, fmv, cfg, kind, min_loss, notes):
-    """Kite SELL orders for the candidates, each cut to max_order_value (trader-risk blocks bigger orders).
-    The stated effect is worked out from the shares actually sold (oldest first), not pro rata."""
-    try:
-        max_value = float(cfg.get("max_order_value", 10000) or 0)
-    except (TypeError, ValueError):
-        raise TaxError("config max_order_value must be a number of rupees")
-    out = []
-    for c in cands:
-        sym, qty = c["symbol"], c["qty"]
-        if qty < 1:
+        if n < 1:
             continue
-        if max_value and qty * c["price"] > max_value:
-            qty = int(max_value // c["price"])
-            if qty < 1:
-                notes.append("%s: one share costs more than your max order; not proposed" % sym)
-                continue
-        res, _ = ledger.what_if(lots[sym], qty, c["price"], today, fmv)
-        net = round(sum(g["gain"] for g in res), 2)
-        if qty < c["qty"]:
-            if kind == "loss" and net > -min_loss:
-                notes.append("%s: selling only %d of %d (to stay under your max order) would book %s because the "
-                             "oldest shares go first; not proposed"
-                             % (sym, qty, c["qty"], "a gain of %s" % inr(net) if net > 0
-                                else "a loss of only %s" % inr(-net)))
-                continue
+        cut = _cut(sym, n, price, max_value, notes)
+        if cut is None:
+            continue
+        qty, used, res = cut, None, []
+        while qty > 0:
+            res = ledger.sale_effect(trades, sym, qty, price, today, fmv)[0]
+            new_tax, new_carry = effect(book, extra + res, fy, tax_rules)
+            if used is None:
+                used = round(base_carry - new_carry, 2)
+            if all(g["kind"] == "LTCG" for g in res) and _total(res) > 0.005 \
+                    and abs(new_tax - base_tax) <= 0.005 and abs(new_carry - base_carry) <= 0.005:
+                break
+            qty -= 1
+        if qty < 1:
+            if used and used > 0.005:
+                notes.append("%s: a long-term gain now would use up %s of loss that is worth more later; not "
+                             "proposed" % (sym, inr(used)))
+            continue
+        if cut < n:
             notes.append("%s: selling %d of %d now keeps the order under your %s max order; sell the rest later"
-                         % (sym, qty, c["qty"], inr(max_value)))
-        if kind == "loss":
-            why = "book a %s loss (trader-tax harvest)" % inr(-net)
-        else:
-            why = "book %s of long-term gain inside the yearly exemption" % inr(net)
-        value = qty * c["price"]
-        est = charges.estimate("CNC", "SELL", value, cfg.get("charges"))
-        out.append({"exchange": "NSE", "tradingsymbol": sym, "transaction_type": "SELL",
-                    "quantity": str(qty), "product": "CNC", "order_type": "LIMIT", "price": "%.2f" % c["price"],
-                    "validity": "DAY", "variety": "regular", "est_value": "%.2f" % value,
-                    "est_charges": "%.2f" % est["total"], "why": why})
-    return out
+                         % (sym, cut, n, inr(max_value)))
+        gain = _total(res)
+        gains.append({"symbol": sym, "qty": qty, "price": price, "gain": gain})
+        gain_orders.append(_sell(sym, qty, price, cfg, "book %s of long-term gain: no tax this year and no carried "
+                                                       "loss used up" % inr(gain)))
+        extra += res
+    return {"losses": losses, "gains": gains, "loss_orders": loss_orders, "gain_orders": gain_orders,
+            "loss_candidates": sorted(taken)}
+
+
+def remove_old(path):
+    """Remove an old orders file; returns how to name it ("the old PATH (proposals from WHO)")."""
+    who = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        who = doc.get("created_by") if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        who = None
+    os.remove(path)
+    if who and isinstance(who, str):
+        return "the old %s (proposals from %s)" % (path, who)
+    return "the old %s" % path
 
 
 def cmd_harvest(a):
@@ -327,29 +452,47 @@ def cmd_harvest(a):
         raise TaxError("--min-loss must be 0 or more")
     inp = load_inputs(a)
     book = inp["book"]
-    today = _today(a)
-    _, bad, hold_err = holdings_check(book["lots"], a.kite_dir, _now(a))
+    now = _now(a)
+    today = now.date()
+    warnings, bad, hold_err = holdings_check(book["lots"], a.kite_dir, now)
     if a.write and hold_err:
-        if os.path.exists(a.write):
-            os.remove(a.write)
         raise TaxError("harvest --write needs a fresh Kite holdings snapshot to check the lots "
                        "(refresh it with kite_snapshot.py save holdings)")
+    try:
+        ords = kite_snapshot.load("orders", a.kite_dir, now=now)
+        if not isinstance(ords, list):
+            raise kite_snapshot.SnapshotError("the orders snapshot is not a list (Kite answer changed?)")
+        ord_err = None
+    except kite_snapshot.SnapshotError as e:
+        ords, ord_err = [], str(e)
+    if a.write and ord_err:
+        raise TaxError("harvest --write needs a fresh Kite orders snapshot to check for open orders "
+                       "(refresh it with kite_snapshot.py save orders)")
     notes = inp["notes"] + (["could not check the lots against Kite holdings (%s)" % hold_err] if hold_err else [])
+    notes += [w for w in warnings if w == NO_POSITIONS]
+    if ord_err:
+        notes.append("could not check Kite's open orders (%s)" % ord_err)
     for s_, (mine, theirs) in sorted(bad.items()):
         if s_ in book["lots"]:
             notes.append("%s skipped: the trades give %d shares but Kite holds %d, so the oldest-first tax figures "
                          "would be wrong" % (s_, mine, theirs))
-    tax_rules = india_tax.rules(inp["cfg"].get("tax_rules"))
-    years = india_tax.summarise(book["realised"], book["speculative"], inp["cfg"].get("tax_rules"))
-    losses, gains = harvest(book["lots"], quote_prices(a.kite_dir, _now(a)), today, years, a.min_loss, book["fmv"],
-                            tax_rules["ltcg_exemption"], skip=set(bad))
-    orders = sell_orders(losses, book["lots"], today, book["fmv"], inp["cfg"], "loss", a.min_loss, notes)
-    if a.include_gains:
-        orders += sell_orders(gains, book["lots"], today, book["fmv"], inp["cfg"], "gain", a.min_loss, notes)
-    removed = False
+    busy = {str(o.get("tradingsymbol", "")).upper() for o in ords
+            if isinstance(o, dict) and str(o.get("status", "")).upper() not in FINISHED}
+    blocked = {tradebook._symbol(b, "config blocked") for b in inp["cfg"].get("blocked") or []}
+    for s_ in sorted(book["lots"]):
+        if s_ in busy:
+            notes.append("%s has an open order in Kite: skipped" % s_)
+        if s_ in blocked:
+            notes.append("%s is on your blocked list: skipped" % s_)
+    tax_rules = inp["cfg"].get("tax_rules")
+    india_tax.rules(tax_rules)
+    h = harvest(book, quote_prices(a.kite_dir, now), today, a.min_loss, inp["cfg"], notes,
+                set(bad) | busy | blocked, tax_rules)
+    losses, gains = h["losses"], h["gains"]
+    orders = h["loss_orders"] + (h["gain_orders"] if a.include_gains else [])
+    removed = None
     if a.write and not orders and os.path.exists(a.write):
-        os.remove(a.write)
-        removed = True
+        removed = remove_old(a.write)
     if a.write and orders:
         d = os.path.dirname(a.write)
         if d:
@@ -366,15 +509,18 @@ def cmd_harvest(a):
         return 0 if orders else 1
     print("FY %s, today %s." % (india_tax.fy_of(today), today))
     if losses:
-        print("Losses you could book (selling the whole position, oldest shares first):")
+        print("Losses worth booking (oldest shares first; each saves tax this year or carries forward):")
         for c in losses:
-            print("  SELL %d %s at %s: loss %s (short term %s, long term %s)" % (
+            spec = c["by_term"]["SPECULATIVE"]
+            print("  SELL %d %s at %s: loss %s (short term %s, long term %s%s)" % (
                 c["qty"], c["symbol"], inr(c["price"]), inr(c["loss"]), inr(c["by_term"]["STCG"]),
-                inr(c["by_term"]["LTCG"])))
+                inr(c["by_term"]["LTCG"]), ", intraday %s" % inr(spec) if spec else ""))
+    elif h["loss_candidates"]:
+        print("No loss of %s or more is worth booking this year (see the notes)." % inr(a.min_loss))
     else:
         print("No position would book a loss of %s or more." % inr(a.min_loss))
     if gains:
-        print("Long-term gains that still fit this year's exemption (tax free up to the limit):")
+        print("Long-term gains that add no tax this year and use up no carried loss:")
         for c in gains:
             print("  SELL %d %s at %s: long-term gain %s" % (c["qty"], c["symbol"], inr(c["price"]), inr(c["gain"])))
     if orders:
@@ -384,7 +530,7 @@ def cmd_harvest(a):
                                                                  inr(float(o["price"])), inr(float(o["est_value"])),
                                                                  o["why"]))
     if removed:
-        print("Removed the old %s: nothing to propose." % a.write)
+        print("Removed %s: nothing to propose." % removed)
     if a.write and orders:
         print("Wrote %d proposed LIVE order(s) to %s. trader-risk checks them next." % (len(orders), a.write))
     print("India has no wash-sale rule, but shares you buy back start a new 12-month clock.")
@@ -429,6 +575,8 @@ def main(argv=None):
         return {"report": cmd_report, "gains": cmd_gains, "sell": cmd_sell, "harvest": cmd_harvest}[a.cmd](a)
     except (TaxError, tradebook.TradeError, india_tax.TaxRuleError, charges.ChargesError) as e:
         print("lots.py: %s" % e, file=sys.stderr)
+        if getattr(a, "write", None) and os.path.exists(a.write):
+            print("Removed %s so no out-of-date proposals are left." % remove_old(a.write), file=sys.stderr)
         return 1
 
 

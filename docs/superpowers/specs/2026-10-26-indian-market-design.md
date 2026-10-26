@@ -131,12 +131,13 @@ All rates, thresholds and dates are in a `tax_rules` block in config, not in cod
 - Financial year April to March, with reports per FY.
 - FIFO lot matching.
 - Listed equity delivery held more than 12 months is LTCG at 12.5% above the yearly exemption of Rs 1,25,000. Held 12 months or less is STCG at 20%.
-- Same-day MIS round trips are speculative business income at the user's slab rate. They are reported separately and get no exemption.
+- Same-day buy and sell of a stock (any product) is speculative business income, as the exchange nets it for delivery; it is reported separately with no exemption.
 - Grandfathering for shares bought before 2018-02-01: the cost is the higher of the actual cost and the 2018-01-31 FMV, capped at the sale price. FMV comes from a user-supplied CSV (`fmv_2018.csv`) and is not bundled.
 - Set-off: STCL against STCG then LTCG, LTCL against LTCG only, speculative loss against speculative income only. Carry-forward is tracked (8 years, and 4 for speculative).
+- Carried losses are used oldest first, across kinds.
 - Harvest view: unrealised losses that could be booked, and unused LTCG exemption headroom. There is no wash-sale logic, because India has no wash-sale rule. Suggestions become proposed orders that go through risk and broker.
-- STT is shown but not deducted from gains.
-- Inputs: `trader/kite/trades.json` and `trader/lots.csv` (date, symbol, quantity, price) for history before the tradebook.
+- STT appears in each proposed order's est_charges; it is not deducted from gains.
+- Inputs: Zerodha Console equity tradebook CSVs (the history; Kite's API returns only today's trades), today's Kite trades snapshot, and trader/lots.csv for opening lots, merged by trade id.
 
 ## 7. Repo-wide changes
 

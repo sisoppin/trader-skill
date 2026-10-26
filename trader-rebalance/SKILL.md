@@ -72,6 +72,7 @@ refused. Never type prices or holdings in by hand.
 - Orders under `min_order_value` are skipped, orders over `max_order_value`
   are cut to the max, and at most `max_orders_per_day` orders are proposed.
 - **Untracked** holdings are left alone unless `--sell-untracked`.
+- **Blocked** stocks (config `blocked`) are never proposed, not even by `--sell-untracked`.
 - **Open orders**: a stock with an order still open in Kite's order book gets no new order; wait for it to fill or cancel it.
 
 ## Steps

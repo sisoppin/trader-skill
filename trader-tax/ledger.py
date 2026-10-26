@@ -121,3 +121,40 @@ def what_if(lots, qty, price, sold, fmv=None):
         out.append(close(lot, take, price, sold, fmv))
         left -= take
     return out, left
+
+
+def _key(g):
+    return tuple(sorted((k, str(v)) for k, v in g.items()))
+
+
+def sale_effect(trades, symbol, qty, price, when, fmv=None):
+    """What a hypothetical SELL of qty symbol at price on date when, added to these trades, would realise:
+    (gains, shortfall). It runs build with and without the sale, so shares bought the same day are matched
+    intraday first (speculative) and the rest close the oldest lots. Only that symbol's trades matter."""
+    mine = [t for t in trades if t["symbol"] == symbol]
+    sell = {"date": when, "symbol": symbol, "side": "SELL", "qty": qty, "price": price, "id": "what-if",
+            "source": "what-if"}
+    before, after = build(mine, fmv), build(mine + [sell], fmv)
+    seen = {}
+    for g in before["realised"]:
+        seen[_key(g)] = seen.get(_key(g), 0) + 1
+    out = []
+    for g in after["realised"]:
+        k = _key(g)
+        if seen.get(k):
+            seen[k] -= 1
+        else:
+            out.append(g)
+    old = [g for g in before["speculative"] if g["sold"] == when]
+    new = [g for g in after["speculative"] if g["sold"] == when]
+    if new:
+        q = new[0]["qty"] - (old[0]["qty"] if old else 0)
+        if q:
+            cost = new[0]["cost"] - (old[0]["cost"] if old else 0.0)
+            proceeds = new[0]["proceeds"] - (old[0]["proceeds"] if old else 0.0)
+            out.insert(0, {"symbol": symbol, "kind": "SPECULATIVE", "sold": when, "acquired": when, "qty": q,
+                           "buy_price": round(cost / q, 4), "sell_price": round(proceeds / q, 4),
+                           "cost": round(cost, 2), "proceeds": round(proceeds, 2),
+                           "gain": round(new[0]["gain"] - (old[0]["gain"] if old else 0.0), 2),
+                           "grandfathered": False})
+    return out, qty - sum(g["qty"] for g in out)

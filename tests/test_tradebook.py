@@ -140,5 +140,28 @@ class Merge(unittest.TestCase):
             self.assertEqual(len(tb.merge(tb.read_lots(a), tb.read_lots(b))), 2)
 
 
+
+class KiteTwins(unittest.TestCase):
+    def kite(self, tid):
+        return tb.kite_trades([{"trade_id": tid, "exchange": "NSE", "tradingsymbol": "INFY", "transaction_type": "SELL",
+                                "quantity": 4, "average_price": 1600.0, "fill_timestamp": "2026-05-04 10:00:00"}])
+
+    def test_a_kite_trade_matching_a_console_trade_but_for_the_id_is_an_error(self):
+        trades = tb.read_tradebook(BOOK)[0]
+        with self.assertRaises(tb.TradeError) as e:
+            tb.merge(trades, self.kite("K77"))
+        self.assertEqual(str(e.exception), "Kite trade K77 matches Console trade T10 except for the trade id: check "
+                                           "that Kite and Console use the same trade ids before trusting the tax "
+                                           "figures")
+
+    def test_the_same_id_or_different_details_are_fine(self):
+        trades = tb.read_tradebook(BOOK)[0]
+        self.assertEqual(len(tb.merge(trades, self.kite("T10"))), 12)
+        other = tb.kite_trades([{"trade_id": "K78", "exchange": "NSE", "tradingsymbol": "INFY",
+                                 "transaction_type": "SELL", "quantity": 3, "average_price": 1600.0,
+                                 "fill_timestamp": "2026-05-04 10:00:00"}])
+        self.assertEqual(len(tb.merge(trades, other)), 13)
+
+
 if __name__ == "__main__":
     unittest.main()

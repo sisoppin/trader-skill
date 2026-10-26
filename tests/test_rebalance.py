@@ -185,5 +185,41 @@ class Cli(unittest.TestCase):
         self.assertIn("for tests only", err)
 
 
+
+class FinalFix(unittest.TestCase):
+    def base(self):
+        return ["--targets", TARGETS, "--config", CFG_PATH, "--kite-dir", KDIR]
+
+    def test_blocked_holdings_are_never_sold(self):
+        res = rebalance.plan(*setup(blocked=["itc.ns"]), sell_untracked=True)
+        self.assertNotIn("ITC", [o["tradingsymbol"] for o in res["orders"]])
+        self.assertEqual([r["action"] for r in res["rows"] if r["symbol"] == "ITC"], ["blocked, left alone"])
+        self.assertIn("ITC is on your blocked list: not sold", res["notes"])
+        res = rebalance.plan(*setup(blocked=["INFY"]), sell_untracked=True)
+        self.assertNotIn("INFY", [o["tradingsymbol"] for o in res["orders"]])
+        self.assertIn(("SELL", "ITC", "10"), orders(res))
+
+    def test_an_error_under_write_removes_the_old_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "orders.json")
+            with open(out, "w") as fh:
+                json.dump({"created_by": "trader-tax", "orders": []}, fh)
+            code, _, err = run(self.base() + ["--now", "2026-10-26T10:05", "--write", out])
+            self.assertEqual(code, 1)
+            self.assertIn("quotes snapshot is", err)
+            self.assertFalse(os.path.exists(out))
+            self.assertIn("Removed the old %s (proposals from trader-tax)" % out, err)
+
+    def test_removing_the_old_file_names_who_wrote_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, "orders.json")
+            with open(out, "w") as fh:
+                json.dump({"created_by": "trader-tax", "orders": []}, fh)
+            code, text, _ = run(self.base() + ["--now", NOW, "--band", "15", "--write", out])
+            self.assertEqual(code, 1)
+            self.assertFalse(os.path.exists(out))
+            self.assertIn("Removed the old %s (proposals from trader-tax): nothing to propose." % out, text)
+
+
 if __name__ == "__main__":
     unittest.main()

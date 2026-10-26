@@ -156,8 +156,10 @@ def _describe(t):
 
 def merge(*lists):
     """All trades in date order (stable). A trade seen again with the same id, date and symbol is a
-    duplicate and dropped (the first one wins) when side, qty and price agree; if they differ, raise."""
-    kept, out = {}, []
+    duplicate and dropped (the first one wins) when side, qty and price agree; if they differ, raise.
+    A Kite trade that matches a Console (or lots) trade in everything but the trade id also raises: the
+    two sources would count the same fill twice."""
+    kept, out, matched = {}, [], set()
     for trades in lists:
         for t in trades:
             key = (t["id"], t["date"], t["symbol"])
@@ -167,8 +169,17 @@ def merge(*lists):
                 out.append(t)
                 continue
             if prev["side"] == t["side"] and prev["qty"] == t["qty"] and abs(prev["price"] - t["price"]) <= 0.01:
+                matched.add(key)
                 continue
             raise TradeError("trade %s on %s (%s) appears twice with different details: %s in %s and %s in %s"
                              % (t["id"], t["date"], t["symbol"], _describe(prev), prev["source"],
                                 _describe(t), t["source"]))
+    loose = [t for t in out if (t["id"], t["date"], t["symbol"]) not in matched]
+    for k in (t for t in loose if t["source"] == "kite"):
+        for t in loose:
+            if t["source"] != "kite" and t["id"] != k["id"] and (t["date"], t["symbol"], t["side"], t["qty"]) \
+                    == (k["date"], k["symbol"], k["side"], k["qty"]) and abs(t["price"] - k["price"]) <= 0.01:
+                raise TradeError("Kite trade %s matches Console trade %s except for the trade id: check that Kite "
+                                 "and Console use the same trade ids before trusting the tax figures"
+                                 % (k["id"], t["id"]))
     return sorted(out, key=lambda t: t["date"])

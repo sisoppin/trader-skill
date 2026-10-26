@@ -41,8 +41,10 @@ Kite's API only returns today's trades, so the history comes from files:
 | `trader/tradebook-<year>.csv` | Zerodha Console > Reports > Tradebook > Equity, downloaded as CSV (one per year is fine) |
 | `trader/lots.csv` | holdings bought before the tradebook starts: `date,symbol,quantity,price` |
 | `trader/fmv_2018.csv` | `symbol,fmv`: the 31 Jan 2018 price of any stock bought before 2018-02-01 |
-| `trader/kite/trades.json` | today's Kite trades (`kite_snapshot.py save trades`) |
+| `trader/kite/trades.json` | today's Kite trades (`kite_snapshot.py save trades`); a snapshot saved on an earlier day is left out |
 | `trader/kite/holdings.json` | Kite holdings, to check that the lots add up |
+| `trader/kite/positions.json` | today's delivery (CNC) trades, added to the holdings for that check |
+| `trader/kite/orders.json` | Kite's order book: harvest skips a stock with an open order |
 | `trader/kite/quotes.json` | Kite quotes, for unrealised gains and harvest prices |
 
 Overlapping downloads are fine: a trade that appears in two files (same trade id, date and symbol) counts once, and one that appears twice with different details stops the run with an error naming both files.
@@ -84,10 +86,17 @@ user adjusts its lines in lots.csv by hand. Say so whenever it happens.
    user's agreement, run `harvest --write` (add `--include-gains` for the
    long-term gains inside the exemption), then `/trader-risk` and
    `/trader-broker`, one yes per order.
-   Harvest skips any stock whose lots do not match Kite's holdings, never
-   proposes a cut-down sale that would book the opposite of what it says
-   (the oldest shares go first), and `--write` needs a fresh holdings
-   snapshot.
+   Harvest measures every proposal with the full set-off for this
+   financial year: a loss is proposed only if it saves tax this year or
+   carries forward (a loss that would only offset gains already inside the
+   exemption is not), and a long-term gain only if it adds no tax and uses
+   up no carried or current loss. A sale today is matched against shares
+   bought today first (intraday). Harvest skips any stock whose lots do not
+   match Kite's holdings, any stock with an open order in Kite and any stock
+   on the blocked list, and never proposes a cut-down sale that would book
+   the opposite of what it says (the oldest shares go first). `--write`
+   needs fresh holdings and orders snapshots; if it stops with an error or
+   finds nothing to propose, it removes the old `trader/orders.json`.
 
 ## Example
 

@@ -36,6 +36,10 @@ The rules:
                 sell, until that order fills or is cancelled
   untracked     holdings not in the targets are left alone and listed, unless
                 --sell-untracked
+  blocked       stocks on your blocked list (config "blocked") are never
+                proposed, not even by --sell-untracked
+  --write       writes the proposals; if there is nothing to propose, or the
+                run stops with an error, an old file at that path is removed
 
 Exit code 0 when there are orders to propose, 1 when nothing is outside the band.
 """
@@ -175,6 +179,7 @@ def plan(cash, held, prices, weights, cfg, band=None, sell_untracked=False, open
                              % (c["max_position_pct"],))
     busy = {str(o.get("tradingsymbol", "")).upper() for o in open_orders or []
             if str(o.get("status", "")).upper() not in FINISHED}
+    blocked = {_symbol(b) for b in c.get("blocked") or []}
     need = sorted(set(held) | set(weights), key=lambda t: (-weights.get(t, 0.0), t))
     missing = [t for t in need if not prices.get(t)]
     if missing:
@@ -205,7 +210,10 @@ def plan(cash, held, prices, weights, cfg, band=None, sell_untracked=False, open
                          "again" % t)
             continue
         if not tracked:
-            if sell_untracked and held.get(t, 0) > 0:
+            if sell_untracked and held.get(t, 0) > 0 and t in blocked:
+                row["action"] = "blocked, left alone"
+                notes.append("%s is on your blocked list: not sold" % t)
+            elif sell_untracked and held.get(t, 0) > 0:
                 sells.append((t, held[t], "not in your targets; selling the whole position (--sell-untracked)"))
                 row["action"] = "sell all"
             else:
@@ -301,6 +309,21 @@ def report(res):
     return "\n".join(lines)
 
 
+def remove_old(path):
+    """Remove an old orders file; returns how to name it ("the old PATH (proposals from WHO)")."""
+    who = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        who = doc.get("created_by") if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        who = None
+    os.remove(path)
+    if who and isinstance(who, str):
+        return "the old %s (proposals from %s)" % (path, who)
+    return "the old %s" % path
+
+
 def load_snapshots(kite_dir, now=None):
     snap = {}
     for kind in ("holdings", "positions", "margins", "orders", "quotes"):
@@ -341,10 +364,9 @@ def main(argv=None):
         prices = {s: q["price"] for s, q in snap["quotes"].items()}
         weights = parse_targets(read_json(a.targets, "targets"), cfg.get("blocked"))
         res = plan(cash, held, prices, weights, cfg, a.band, a.sell_untracked, snap["orders"])
-        removed = False
+        removed = None
         if a.write and not res["orders"] and os.path.exists(a.write):
-            os.remove(a.write)
-            removed = True
+            removed = remove_old(a.write)
         if a.write and res["orders"]:
             d = os.path.dirname(a.write)
             if d:
@@ -359,6 +381,8 @@ def main(argv=None):
                 fh.write("\n")
     except (RebalanceError, ValueError, charges.ChargesError) as e:
         print("rebalance.py: %s" % e, file=sys.stderr)
+        if a.write and os.path.exists(a.write):
+            print("Removed %s so no out-of-date proposals are left." % remove_old(a.write), file=sys.stderr)
         return 1
     if a.json:
         print(json.dumps(res, indent=2))
@@ -367,7 +391,7 @@ def main(argv=None):
         if a.write and res["orders"]:
             print("Wrote %d proposed order(s) to %s." % (len(res["orders"]), a.write))
         if removed:
-            print("Removed the old %s: nothing to propose." % a.write)
+            print("Removed %s: nothing to propose." % removed)
     return 0 if res["orders"] else 1
 
 

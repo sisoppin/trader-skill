@@ -88,5 +88,32 @@ class Rules(unittest.TestCase):
         self.assertEqual(lots["INFY"][0]["qty"], 8)
 
 
+
+class SaleEffect(unittest.TestCase):
+    def test_a_sale_today_is_matched_intraday_first(self):
+        trades = [trade(D(2024, 1, 2), "X", "BUY", 10, 100.0, "A"), trade(D(2026, 10, 26), "X", "BUY", 10, 150.0, "B")]
+        gains, short = ledger.sale_effect(trades, "X", 10, 140.0, D(2026, 10, 26))
+        self.assertEqual(short, 0)
+        self.assertEqual([(g["kind"], g["qty"], g["gain"]) for g in gains], [("SPECULATIVE", 10, -100.0)])
+        gains, short = ledger.sale_effect(trades, "X", 15, 140.0, D(2026, 10, 26))
+        self.assertEqual(sorted((g["kind"], g["qty"], g["gain"]) for g in gains),
+                         [("LTCG", 5, 200.0), ("SPECULATIVE", 10, -100.0)])
+        self.assertEqual(ledger.sale_effect(trades, "X", 25, 140.0, D(2026, 10, 26))[1], 5)
+
+    def test_an_earlier_intraday_trade_today_is_not_counted_twice(self):
+        trades = [trade(D(2024, 1, 2), "X", "BUY", 10, 100.0, "A"), trade(D(2026, 10, 26), "X", "BUY", 10, 150.0, "B"),
+                  trade(D(2026, 10, 26), "X", "SELL", 4, 160.0, "C")]
+        gains, short = ledger.sale_effect(trades, "X", 6, 140.0, D(2026, 10, 26))
+        self.assertEqual(short, 0)
+        self.assertEqual([(g["kind"], g["qty"], g["gain"]) for g in gains], [("SPECULATIVE", 6, -60.0)])
+
+    def test_no_trade_today_is_plain_fifo(self):
+        trades = [trade(D(2024, 1, 2), "X", "BUY", 10, 100.0, "A"), trade(D(2026, 6, 1), "X", "BUY", 10, 150.0, "B"),
+                  trade(D(2025, 1, 2), "Y", "BUY", 1, 10.0, "C")]
+        gains, short = ledger.sale_effect(trades, "X", 12, 140.0, D(2026, 10, 26))
+        self.assertEqual([(g["kind"], g["qty"], g["gain"]) for g in gains], [("LTCG", 10, 400.0), ("STCG", 2, -20.0)])
+        self.assertEqual(short, 0)
+
+
 if __name__ == "__main__":
     unittest.main()
