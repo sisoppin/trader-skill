@@ -3,7 +3,9 @@
 
 Pre-open 09:00 to 09:15, normal session 09:15 to 15:30 IST, Monday to
 Friday, minus NSE trading holidays. Zerodha squares MIS (intraday)
-positions off from about 15:20.
+positions off from about 15:25 (moved from 15:20 in December 2025; Zerodha
+can change it, see zerodha.com/marketintel/bulletin) and charges Rs 50 + GST
+for each position it closes.
 
 India has no daylight saving time, so a fixed +05:30 offset is exact.
 
@@ -14,8 +16,12 @@ refresh) and load_holidays() merges it in, replacing the bundled years it
 covers. A year in neither is unknown, and status() then says
 calendar_known false.
 
-Special sessions (Muhurat trading on Diwali) are not modelled: the clock says
-closed on those days.
+Special sessions (Muhurat trading on Diwali, a Saturday budget-day session)
+are not in NSE's holiday list. Add each one when NSE announces it
+(alerts.py holidays session ...): load_sessions() reads them from
+trader/cache/nse/special_sessions.json, and the clock is open only inside
+that window on that day. MIS square-off times differ on those days, so
+mis_square_off is None for a special session.
 
 This file is copied into every skill that needs the market clock. Keep the
 copies identical: tests/test_repo.py checks.
@@ -29,9 +35,10 @@ IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), "IST")
 PRE_OPEN = datetime.time(9, 0)
 OPEN = datetime.time(9, 15)
 CLOSE = datetime.time(15, 30)
-SQUARE_OFF = datetime.time(15, 20)
+SQUARE_OFF = datetime.time(15, 25)
 URL = "https://www.nseindia.com/api/holiday-master?type=trading"
 CACHE = os.path.join("trader", "cache", "nse", "holidays.json")
+SESSIONS = os.path.join("trader", "cache", "nse", "special_sessions.json")
 
 HOLIDAYS = {
     "2026-01-15": "Municipal Corporation Election - Maharashtra",
@@ -125,18 +132,79 @@ def load_holidays(path=CACHE):
     return holidays, years
 
 
+def _hhmm(text, what):
+    try:
+        return datetime.datetime.strptime(str(text), "%H:%M").time()
+    except ValueError:
+        raise CalendarError("%s wants a time like 18:15, got %r" % (what, text))
+
+
+def load_sessions(path=SESSIONS):
+    """{"YYYY-MM-DD": {"open": time, "close": time, "name": str}} from the special sessions file."""
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        out = {}
+        for d, s in doc["sessions"].items():
+            datetime.date.fromisoformat(d)
+            o, c = _hhmm(s["open"], "open"), _hhmm(s["close"], "close")
+            if not o < c:
+                raise ValueError("%s closes before it opens" % d)
+            out[d] = {"open": o, "close": c, "name": str(s.get("name") or "special session")}
+        return out
+    except (ValueError, KeyError, TypeError, AttributeError, CalendarError) as e:
+        raise CalendarError("%s is not a special sessions file (%s): fix it or run alerts.py holidays session"
+                            % (path, e))
+
+
+def save_session(date, opens, closes, name, path=SESSIONS, remove=False):
+    """Add (or remove) one special session and write the file. Returns the sessions left."""
+    sessions = load_sessions(path)
+    try:
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        raise CalendarError("--date wants a date like 2026-11-08, got %r" % date)
+    if remove:
+        sessions.pop(date, None)
+    else:
+        o, c = _hhmm(opens, "--open"), _hhmm(closes, "--close")
+        if not o < c:
+            raise CalendarError("the session must close after it opens")
+        sessions[date] = {"open": o, "close": c, "name": name or "special session"}
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    doc = {"sessions": {d: {"open": s["open"].strftime("%H:%M"), "close": s["close"].strftime("%H:%M"),
+                            "name": s["name"]} for d, s in sessions.items()}}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    return sessions
+
+
 class Calendar:
-    def __init__(self, holidays=None, years=None):
+    def __init__(self, holidays=None, years=None, sessions=None):
         if holidays is None:
             holidays, years = load_holidays()
         self.holidays = holidays
         self.years = set(years if years is not None else YEARS)
+        self.sessions = load_sessions() if sessions is None else sessions
 
     def known(self, d):
         return d.year in self.years
 
+    def session(self, d):
+        """(opens, closes, special session or None) for a trading day."""
+        sp = self.sessions.get(d.isoformat())
+        if sp:
+            return sp["open"], sp["close"], sp
+        return OPEN, CLOSE, None
+
     def trading_day(self, d):
         """(is_trading_day, reason). An unknown year counts every weekday as a trading day."""
+        sp = self.sessions.get(d.isoformat())
+        if sp:
+            return True, "special session: " + sp["name"]
         if d.weekday() >= 5:
             return False, "weekend"
         name = self.holidays.get(d.isoformat())
@@ -148,11 +216,11 @@ class Calendar:
         """The next session open after now (today's if it is before 09:15), aware IST."""
         now = now.astimezone(IST)
         d = now.date()
-        if not (self.trading_day(d)[0] and now.time() < OPEN):
+        if not (self.trading_day(d)[0] and now.time() < self.session(d)[0]):
             d += datetime.timedelta(days=1)
         for _ in range(15):
             if self.trading_day(d)[0]:
-                return datetime.datetime.combine(d, OPEN, tzinfo=IST)
+                return datetime.datetime.combine(d, self.session(d)[0], tzinfo=IST)
             d += datetime.timedelta(days=1)
         return None
 
@@ -161,12 +229,17 @@ class Calendar:
         d, t = now.date(), now.time()
         ok, reason = self.trading_day(d)
         st = {"now_ist": now.strftime("%Y-%m-%d %H:%M"), "date": d.isoformat(), "weekday": now.strftime("%A"),
-              "calendar_known": self.known(d), "open": False, "phase": "closed", "reason": reason}
+              "calendar_known": self.known(d), "open": False, "phase": "closed", "reason": reason,
+              "special": None}
         if ok:
-            st.update(opens=OPEN.strftime("%H:%M"), closes=CLOSE.strftime("%H:%M"),
-                      mis_square_off=SQUARE_OFF.strftime("%H:%M"))
-            if OPEN <= t < CLOSE:
-                st.update(open=True, phase="open", reason="normal session")
+            opens, closes, sp = self.session(d)
+            st.update(opens=opens.strftime("%H:%M"), closes=closes.strftime("%H:%M"),
+                      mis_square_off=None if sp else SQUARE_OFF.strftime("%H:%M"),
+                      special=sp["name"] if sp else None)
+            if opens <= t < closes:
+                st.update(open=True, phase="open", reason="special session: %s" % sp["name"] if sp else "normal session")
+            elif sp and t < opens:
+                st["reason"] = "before the special session (%s)" % sp["name"]
             elif PRE_OPEN <= t < OPEN:
                 st.update(phase="pre_open", reason="pre-open session (nothing trades until 09:15)")
             elif t < PRE_OPEN:

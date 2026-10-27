@@ -59,7 +59,7 @@ class Example(unittest.TestCase):
         self.assertIn("buys scaled to 55%", res["notes"][0])
         o = res["orders"][0]
         self.assertEqual((o["product"], o["order_type"], o["price"], o["est_value"], o["est_charges"]),
-                         ("CNC", "LIMIT", "1612.50", "6450.00", "6.69"))
+                         ("CNC", "LIMIT", "1612.50", "6450.00", "22.03"))
 
     def test_the_orders_pass_the_risk_check(self):
         res = rebalance.plan(*setup())

@@ -57,13 +57,18 @@ refused, and any rule that needs a refused snapshot BLOCKS the order.
 
 ## The checks
 
-- format: a bare NSE symbol, BUY or SELL, whole shares, LIMIT (or MARKET if
-  allowed), DAY validity, regular (or amo if allowed). No SL or SL-M.
-- product: CNC delivery, or MIS intraday only when `allow_mis` is true.
-- hours: 09:15 to 15:30 IST on NSE trading days; a year without a loaded
+- format: a bare NSE symbol, BUY or SELL, whole shares, LIMIT at a price in
+  whole paise (or MARKET if allowed, with `"market_protection": "-1"` or a
+  percentage: Kite rejects API market orders without it), DAY validity,
+  regular (or amo if allowed). No SL or SL-M.
+- product: CNC delivery, or MIS intraday only when `allow_mis` is true. No
+  MIS in a special session (Muhurat and the like).
+- hours: 09:15 to 15:30 IST on NSE trading days, or the window of a special
+  session added with `alerts.py holidays session`; a year without a loaded
   holiday list blocks too.
 - price: within `max_limit_deviation_pct` of the last price and inside the
-  circuit band.
+  circuit band, and the stock must have traded today while NSE is open (a
+  last price from an earlier day means it is suspended or not trading).
 - size, cash, buffer and position limits, with charges counted.
 - short: no delivery sale beyond what you hold; no MIS short unless allowed.
 - intraday: no new MIS positions after `mis_cutoff`, exposure capped, a

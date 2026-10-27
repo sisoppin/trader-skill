@@ -4,6 +4,8 @@
     python3 alerts.py clock                            # is NSE open? next open, MIS square-off
     python3 alerts.py holidays refresh                 # NSE holiday list -> trader/cache/nse/holidays.json
     python3 alerts.py holidays refresh --file h.json   # the same, from a file saved in a browser
+    python3 alerts.py holidays session --date 2026-11-08 --open 18:00 --close 19:00 --name "Muhurat trading"
+    python3 alerts.py holidays session --date 2026-11-08 --remove
     python3 alerts.py quote INFY RELIANCE --write      # trader/kite/quotes.json -> trader/prices.json
     python3 alerts.py add --symbol INFY --above 1700   # rules live in trader/alerts.json
     python3 alerts.py add --symbol RELIANCE --stop 1350
@@ -22,7 +24,8 @@ Rule types:
                 (or from "ref" if you give one); "direction": "up" or "down"
   opening_bell  NSE opened today (rings once per trading day)
   mis_warning   an MIS (intraday) position is still open at or after "at"
-                (default 15:05 IST); Zerodha squares MIS off from about 15:20.
+                (default 15:05 IST); Zerodha squares MIS off from about 15:25
+                and charges Rs 50 + GST for each position it closes.
                 Reads trader/kite/positions.json. Rings once per day.
 
 An above / below alert rings ONCE and then stays quiet until you reset it,
@@ -90,7 +93,7 @@ def _read(path, default):
 
 def calendar(a):
     holidays, years = nse_calendar.load_holidays(a.holidays)
-    return nse_calendar.Calendar(holidays, years)
+    return nse_calendar.Calendar(holidays, years, nse_calendar.load_sessions(a.sessions))
 
 
 # ---------------------------------------------------------------- quotes
@@ -237,8 +240,9 @@ def evaluate(rules, quotes, status, state, now, positions=None):
                 held = mis_positions(positions)
                 if held:
                     rings.append({"id": rid, "symbol": "", "message": (
-                        "MIS positions still open at %s IST: %s. Zerodha squares MIS off from about %s IST; "
-                        "close them yourself first if you want to choose the price."
+                        "MIS positions still open at %s IST: %s. Zerodha squares MIS off from about %s IST "
+                        "and charges Rs 50 + GST for each one; close them yourself first if you want to choose "
+                        "the price."
                         % (status["now_ist"][11:], ", ".join("%s %+d" % h for h in held),
                            nse_calendar.SQUARE_OFF.strftime("%H:%M")))})
                     rung[rid] = stamp
@@ -290,7 +294,10 @@ def cmd_clock(a):
     else:
         print("%s IST (%s): NSE %s, %s." % (st["now_ist"], st["weekday"], "OPEN" if st["open"] else "closed",
                                             st["reason"]))
-        if st.get("opens"):
+        if st.get("opens") and st.get("special"):
+            print("Today's special session (%s): %s to %s IST. Zerodha sets its own MIS square-off time for "
+                  "special sessions: check its bulletin." % (st["special"], st["opens"], st["closes"]))
+        elif st.get("opens"):
             print("Today's session: %s to %s IST. Zerodha squares MIS positions off from about %s."
                   % (st["opens"], st["closes"], st["mis_square_off"]))
         if st.get("next_open"):
@@ -302,6 +309,19 @@ def cmd_clock(a):
 
 
 def cmd_holidays(a):
+    if a.action == "session":
+        if not a.date or (not a.remove and not (a.open and a.close)):
+            raise nse_calendar.CalendarError("holidays session needs --date and either --open and --close, "
+                                             "or --remove")
+        sessions = nse_calendar.save_session(a.date, a.open, a.close, a.name, a.sessions, remove=a.remove)
+        if a.remove:
+            print("Removed the special session on %s from %s." % (a.date, a.sessions))
+        else:
+            print("Saved the special session on %s, %s to %s IST, to %s." % (a.date, a.open, a.close, a.sessions))
+        for d in sorted(sessions):
+            s = sessions[d]
+            print("  %s  %s to %s  %s" % (d, s["open"].strftime("%H:%M"), s["close"].strftime("%H:%M"), s["name"]))
+        return 0
     doc = nse.read_json_file(a.file) if a.file else nse.Client().get_json(nse_calendar.URL)
     holidays = nse_calendar.parse_holiday_master(doc)
     years = nse_calendar.save_holidays(holidays, a.holidays)
@@ -464,6 +484,7 @@ def main(argv=None):
     def clock_args(p):
         p.add_argument("--now", help="pretend it is this time (ISO; no offset = IST)")
         p.add_argument("--holidays", default=nse_calendar.CACHE, help="the cached NSE holiday list")
+        p.add_argument("--sessions", default=nse_calendar.SESSIONS, help="special sessions (Muhurat and the like)")
         p.add_argument("--json", action="store_true")
 
     def kite_args(p):
@@ -471,10 +492,16 @@ def main(argv=None):
 
     p = sub.add_parser("clock", help="is NSE open?")
     clock_args(p)
-    p = sub.add_parser("holidays", help="refresh NSE's holiday list")
-    p.add_argument("action", choices=["refresh"])
+    p = sub.add_parser("holidays", help="refresh NSE's holiday list, or add a special session")
+    p.add_argument("action", choices=["refresh", "session"])
     p.add_argument("--file", help="the holiday-master JSON saved from a browser")
     p.add_argument("--holidays", default=nse_calendar.CACHE)
+    p.add_argument("--sessions", default=nse_calendar.SESSIONS, help="the special sessions file")
+    p.add_argument("--date", help="session: the day, like 2026-11-08")
+    p.add_argument("--open", help="session: opening time IST, like 18:00")
+    p.add_argument("--close", help="session: closing time IST, like 19:00")
+    p.add_argument("--name", help="session: what it is, like Muhurat trading")
+    p.add_argument("--remove", action="store_true", help="session: remove the session on --date")
     p = sub.add_parser("quote", help="show quotes from the Kite snapshot")
     clock_args(p)
     kite_args(p)

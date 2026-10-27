@@ -44,7 +44,7 @@ import nse_calendar
 from rupees import inr
 
 KITE_FIELDS = ("exchange", "tradingsymbol", "transaction_type", "quantity", "product", "order_type",
-               "price", "trigger_price", "validity", "variety")
+               "price", "trigger_price", "validity", "variety", "market_protection")
 TOOL = "place_order"  # the Kite connector's order tool
 PRODUCT_WORDS = {"CNC": "delivery (CNC)", "MIS": "intraday (MIS)"}
 RISK_MAX_AGE = 600  # seconds: an older risk check has stale prices behind it

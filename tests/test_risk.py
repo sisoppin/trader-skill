@@ -131,11 +131,48 @@ class Hours(unittest.TestCase):
         self.assertIn("holiday list for 2027 is not loaded", why(run_check([order()], d=data(), now=later)))
 
 
+class SpecialSession(unittest.TestCase):
+    MUHURAT = {"2026-11-08": {"open": cal_mod._hhmm("18:00", "open"), "close": cal_mod._hhmm("19:00", "close"),
+                              "name": "Muhurat trading"}}
+
+    def run_at(self, when, o):
+        cal = cal_mod.Calendar(dict(cal_mod.HOLIDAYS), cal_mod.YEARS, self.MUHURAT)
+        return check.check([o], cfg(allow_mis=True), data(), ist(when), cal)
+
+    def test_open_inside_the_window_only(self):
+        self.assertNotIn("hours:", why(self.run_at("2026-11-08T18:30", order())))
+        self.assertIn("hours: NSE is closed", why(self.run_at("2026-11-08T17:30", order())))
+
+    def test_no_mis_in_a_special_session(self):
+        self.assertIn("no MIS in a special session (Muhurat trading)",
+                      why(self.run_at("2026-11-08T18:30", order(product="MIS"))))
+
+
 class Price(unittest.TestCase):
     def test_market_orders_are_off_by_default(self):
         mkt = order(order_type="MARKET", price=None)
         self.assertIn("price: MARKET orders are off", why(run_check([mkt])))
-        self.assertEqual(verdicts(run_check([mkt], cfg(allow_market_orders=True))), ["PASS"])
+        self.assertIn("needs \"market_protection\"", why(run_check([mkt], cfg(allow_market_orders=True))))
+        protected = order(order_type="MARKET", price=None, market_protection="-1")
+        self.assertEqual(verdicts(run_check([protected], cfg(allow_market_orders=True))), ["PASS"])
+        bad = order(order_type="MARKET", price=None, market_protection="0")
+        self.assertIn("market_protection", why(run_check([bad], cfg(allow_market_orders=True))))
+
+    def test_limit_price_in_fractions_of_a_paisa(self):
+        self.assertIn("fractions of a paisa", why(run_check([order(price="1612.505")])))
+        self.assertEqual(verdicts(run_check([order(price="1612.55")])), ["PASS"])
+
+    def test_last_trade_not_today_is_a_stale_price(self):
+        d = data()
+        d["quotes"]["INFY"]["time"] = "2026-10-23 15:29:59"
+        self.assertIn("NSE:INFY last traded on 2026-10-23, not today", why(run_check([order()], d=d)))
+
+    def test_quote_without_a_trade_time_only_warns(self):
+        d = data()
+        d["quotes"]["INFY"]["time"] = ""
+        res = run_check([order()], d=d)
+        self.assertEqual(verdicts(res), ["PASS"])
+        self.assertIn("no last trade time", " ".join(res["results"][0]["warnings"]))
 
     def test_limit_far_from_the_last_price(self):
         res = run_check([order(price="1700")])
