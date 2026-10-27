@@ -45,9 +45,15 @@ class Save(unittest.TestCase):
             ks.save("quotes", {"status": "error", "message": "Incorrect api_key or access_token."}, self.d)
         self.assertIn("access_token", str(c.exception))
 
+    def test_orders_kind(self):
+        ks.save("orders", [{"order_id": "1", "status": "COMPLETE"}], self.d, now=T0)
+        self.assertEqual(ks.load("orders", self.d, now=T0 + 600 * SEC)[0]["status"], "COMPLETE")
+        with self.assertRaises(ks.SnapshotError):
+            ks.load("orders", self.d, now=T0 + 601 * SEC)
+
     def test_unknown_kind(self):
         with self.assertRaises(ks.SnapshotError):
-            ks.save("orders", {}, self.d)
+            ks.save("gtt", {}, self.d)
 
 
 class Load(unittest.TestCase):
@@ -154,6 +160,14 @@ class ReviewFixes(unittest.TestCase):
                        "NSE:TCS": {"last_price": 0}})
         self.assertEqual(sorted(q), ["INFY"])
         self.assertEqual(q["INFY"]["quote_time"], "2026-10-26 15:29:58")
+
+    def test_non_finite_values_are_not_prices(self):
+        q = ks.quotes({"NSE:INFY": {"last_price": float("nan")},
+                       "NSE:TCS": {"last_price": 3000, "upper_circuit_limit": float("nan"),
+                                   "lower_circuit_limit": float("inf")}})
+        self.assertEqual(sorted(q), ["TCS"])
+        self.assertIsNone(q["TCS"]["upper_circuit"])
+        self.assertIsNone(q["TCS"]["lower_circuit"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,7 @@
+{
+  "fetched_at": "2026-10-26T10:00:00+05:30",
+  "data": [
+    {"order_id": "261026000000001", "status": "COMPLETE", "tradingsymbol": "ITC", "exchange": "NSE", "transaction_type": "BUY", "product": "CNC", "quantity": 10},
+    {"order_id": "261026000000002", "status": "REJECTED", "tradingsymbol": "ITC", "exchange": "NSE", "transaction_type": "BUY", "product": "CNC", "quantity": 10}
+  ]
+}

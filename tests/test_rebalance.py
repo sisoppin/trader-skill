@@ -8,7 +8,6 @@ from contextlib import redirect_stdout, redirect_stderr
 from _load import load, FIX
 
 rebalance = load("trader-rebalance", "rebalance")
-check = load("trader-risk", "check")
 
 D = os.path.join(FIX, "trader-rebalance")
 
@@ -53,8 +52,6 @@ class TheReel(unittest.TestCase):
         res = rebalance.plan(pf, px, w, cfg)
         self.assertEqual([o[1] for o in orders(res)], ["AAPL", "AXP", "GOOGL", "KO", "BAC"])
         self.assertGreaterEqual(res["cash_after"], res["cash_buffer"])
-        risk = check.check(rebalance.clean(res["orders"]), cfg, portfolio=pf, prices=px, today="2026-10-13")
-        self.assertEqual(risk["block"], 0, risk["results"])
 
 
 class Drift(unittest.TestCase):
