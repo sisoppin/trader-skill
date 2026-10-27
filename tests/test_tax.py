@@ -387,6 +387,29 @@ class RealTaxEffect(unittest.TestCase):
         self.assertIn("DDD: booking this loss saves no tax this year (it would only offset gains already inside "
                       "the exemption) and nothing would carry forward; not proposed", res["notes"])
 
+    def test_two_competing_losses_claim_one_saving(self):
+        with tempfile.TemporaryDirectory() as d:
+            argv = book_inputs(d, [("CCC", "2024-01-02", "BUY", 100, 1000), ("CCC", "2026-05-04", "SELL", 100, 2350),
+                                   ("DDD", "2026-06-01", "BUY", 10, 2000), ("EEE", "2026-06-01", "BUY", 10, 2000)],
+                               {"DDD": 1000, "EEE": 1000}, cfg={"max_order_value": "500000"})
+            _, res, _ = harvest_json(["--min-loss", "500"] + argv)
+        self.assertEqual([(o["tradingsymbol"], o["why"]) for o in res["orders"]],
+                         [("DDD", "book a Rs 10,000 loss (saves about Rs 1,250 this year)")])
+        self.assertEqual([(c["symbol"], c["saves"]) for c in res["losses"]], [("DDD", 1250.0)])
+        self.assertIn("EEE: booking this loss saves no tax this year (it would only offset gains already inside "
+                      "the exemption) and nothing would carry forward; not proposed", res["notes"])
+
+    def test_two_losses_that_both_help_claim_the_true_combined_saving(self):
+        with tempfile.TemporaryDirectory() as d:
+            argv = book_inputs(d, [("CCC", "2026-05-01", "BUY", 100, 1000), ("CCC", "2026-05-04", "SELL", 100, 1300),
+                                   ("DDD", "2026-06-01", "BUY", 10, 2000), ("EEE", "2026-06-01", "BUY", 10, 2000)],
+                               {"DDD": 1000, "EEE": 1000}, cfg={"max_order_value": "500000"})
+            _, res, _ = harvest_json(["--min-loss", "500"] + argv)
+        self.assertEqual([(o["tradingsymbol"], o["why"]) for o in res["orders"]],
+                         [("DDD", "book a Rs 10,000 loss (saves about Rs 2,000 this year)"),
+                          ("EEE", "book a Rs 10,000 loss (saves about Rs 2,000 this year)")])
+        self.assertEqual(sum(c["saves"] for c in res["losses"]), 4000.0)
+
     def test_a_loss_against_short_term_gain_states_the_saving(self):
         with tempfile.TemporaryDirectory() as d:
             argv = book_inputs(d, [("EEE", "2026-05-01", "BUY", 100, 100), ("EEE", "2026-06-01", "SELL", 100, 200),

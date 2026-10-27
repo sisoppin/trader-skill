@@ -335,8 +335,8 @@ def harvest(book, prices, today, min_loss, cfg, notes, skip=(), tax_rules=None):
     fy = india_tax.fy_of(today)
     max_value = _max_value(cfg)
     trades, fmv = book["trades"], book["fmv"]
-    base_tax, base_carry = effect(book, [], fy, tax_rules)
     losses, loss_orders, extra, taken = [], [], [], set()
+    cands = []
     for sym in sorted(book["lots"]):
         if sym in skip:
             continue
@@ -362,7 +362,13 @@ def harvest(book, prices, today, min_loss, cfg, notes, skip=(), tax_rules=None):
                              % (sym, qty, full, "a gain of %s" % inr(net) if net > 0
                                 else "a loss of only %s" % inr(-net)))
                 continue
-        new_tax, new_carry = effect(book, res, fy, tax_rules)
+        cands.append((sym, qty, full, price, res, net))
+    # Largest loss first (then symbol), so the biggest saving gets the first claim; each is then measured on
+    # top of the losses already proposed, as the gain loop below does.
+    cands.sort(key=lambda c: (c[5], c[0]))
+    for sym, qty, full, price, res, net in cands:
+        base_tax, base_carry = effect(book, extra, fy, tax_rules)
+        new_tax, new_carry = effect(book, extra + res, fy, tax_rules)
         saved, carried = round(base_tax - new_tax, 2), round(new_carry - base_carry, 2)
         if saved <= 0.005 and carried <= 0.005:
             notes.append("%s: booking this loss saves no tax this year (it would only offset gains already inside "
