@@ -114,8 +114,9 @@ An example: copying Rekha Jhunjhunwala with Rs 50,000.
 3. **`/trader-risk`** checks each one against fresh Kite data and your limits:
    market hours and holidays, the price band, available funds, the order size,
    the number of orders today, blocked symbols. PASS or BLOCK, with the reason.
-4. **`/trader-broker`** shows you each ticket, marked LIVE: "BUY 2 TITAN, CNC,
-   LIMIT Rs 3,400". You type yes for that exact order. Claude calls the Kite
+4. **`/trader-broker`** shows you each ticket, marked LIVE: "BUY 2 shares of
+   TITAN, limit Rs 3,400, delivery (CNC), good for today". You type yes for
+   that exact order. Claude calls the Kite
    connector's place-order tool, and its "Needs approval" card asks you once
    more.
 5. On a schedule: **`/trader-news`** shows each new announcement from your
@@ -154,8 +155,10 @@ python3 -m unittest discover -s tests -v
 
 The tests run offline, on fixtures cut from real NSE answers (announcements,
 insider trades, bulk deals, results and shareholding XBRL, the holiday list)
-and Kite-shaped snapshots. The few synthetic files, such as the AMC sheets,
-say so in their first line.
+and Kite-shaped snapshots. A few are made up for cases real data lacks: the
+AMC sheets and a promoter insider trade say so in their first line, and the
+tax lots, the tradebook and the screener prices and CSV are hand-built
+examples.
 
 ## Fine print
 

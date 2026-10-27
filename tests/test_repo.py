@@ -112,6 +112,21 @@ class Repo(unittest.TestCase):
         self.assertLessEqual(float(cfg["max_order_value"]), 10000)
         self.assertNotIn("paper", cfg)
 
+    def test_no_us_terms_left(self):
+        # skill code, docs, manifests and fixtures; docs/ (the spec and the plans) and the test code are history
+        terms = [re.compile(r"\bSEC\b"), re.compile(r"EDGAR"), re.compile(r"\b13F"), re.compile(r"CUSIP", re.I),
+                 re.compile(r"Alpaca", re.I), re.compile(r"NYSE"), re.compile(r"(?<!no )wash[- ]sale", re.I),
+                 re.compile(r"\bUSD\b")]
+        hits = []
+        for path in every_text_file():
+            rel = os.path.relpath(path, ROOT)
+            if rel.startswith("docs" + os.sep) or (rel.startswith("tests" + os.sep) and rel.endswith(".py")):
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    hits += ["%s:%d: %s" % (rel, n, line.strip()[:80]) for t in terms if t.search(line)]
+        self.assertEqual(hits, [])
+
     def test_shared_helpers_are_identical(self):
         for name in SHARED:
             copies = [os.path.join(ROOT, s, name) for s in SKILLS if os.path.isfile(os.path.join(ROOT, s, name))]

@@ -25,9 +25,11 @@ A Claude Code plugin: 11 `trader-*/` skill folders, each a `SKILL.md` plus a std
 
 ## Code rules
 
-- Python 3.8+, standard library only. No pip dependencies and no manifest files. `pdftotext` is an optional external binary.
+- Python 3.8+, standard library only. No pip dependencies and no manifest files.
 - SKILL.md files call their tool as `python3 "${CLAUDE_SKILL_DIR}/<script>.py"`. Docs are plain-language prose.
 - NSE calls go through `nse.Client` (cookie warm-up, a pause between requests, the daily cache in `trader/cache/nse/`). When NSE blocks a request, stop with exit code 2 and print the URL plus the `--file` or `--offline` rerun; never retry around a block.
+- Kite data reaches the tools only as snapshots Claude saves from the Kite connector with `kite_snapshot.py save` into `trader/kite/`. Tools refuse stale ones (quotes over 120 seconds, holdings, positions, margins and orders over 10 minutes) and never call Kite themselves.
+- A partial read never becomes output another skill acts on: a tool that could not read every stock exits 2, marks its file (`"complete": false`) or refuses `--write`.
 
 ## Order safety (do not weaken)
 
@@ -40,5 +42,5 @@ Kite has no paper account: every order is LIVE, real money. `ticket.py` also ref
 
 ## Scope and fork notes
 
-- The pack is being converted to India: see `docs/superpowers/specs/2026-10-26-indian-market-design.md` and the plans in `docs/superpowers/plans/`. Converted so far: trader-alerts (NSE clock, Kite quotes), the order path, trader-budget, trader-risk and trader-broker (Kite place_order shape, rupees, whole shares), the portfolio skills trader-rebalance and trader-tax (Kite holdings, Zerodha Console tradebook, Indian capital gains), trader-news and trader-insider (NSE announcements, SEBI insider trades, bulk and block deals; trader-pelosi was renamed trader-insider), and trader-analyst and trader-copycat (NSE results XBRL, NSE shareholding patterns, AMC portfolio sheets saved as CSV). The other skills are still US until their phase lands; their docs may still mention `ticket.py fill` or Alpaca. The shared helpers (`kite_snapshot.py`, `nse.py`, `nse_calendar.py`, `nse_symbols.py`, `rupees.py`, `charges.py` whose source copy is in trader-budget, and `watchlist.py` whose source copy is in trader-news) are copied into each skill that needs them and must stay byte-identical (`test_shared_helpers_are_identical`).
+- The pack is for the Indian market (NSE, Zerodha Kite): see `docs/superpowers/specs/2026-10-26-indian-market-design.md` and the phase plans in `docs/superpowers/plans/`. All 11 skills are converted, and `test_no_us_terms_left` fails if a US-market term (its list is in the test) comes back into skill code, docs, manifests or fixtures (docs/ and the test code are exempt). The shared helpers (`kite_snapshot.py`, `nse.py`, `nse_calendar.py`, `nse_symbols.py`, `rupees.py`, `charges.py` whose source copy is in trader-budget, and `watchlist.py` whose source copy is in trader-news) are copied into each skill that needs them and must stay byte-identical (`test_shared_helpers_are_identical`).
 - This is a fork of Jake Schincariol's US pack, now `sisoppin/trader-skill` (`origin`). The README install lines, `plugin.json` and `marketplace.json` (homepage, repository, author) and `test_repo.py` `REPO` all say `sisoppin/trader-skill`; change them together. LICENSE keeps the original copyright line above the new one.
