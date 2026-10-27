@@ -2,6 +2,7 @@ import datetime
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -94,6 +95,50 @@ class Cli(unittest.TestCase):
         self.assertEqual((r["revenue_growth_yoy"], r["revenue_growth_qoq"], r["net_profit_growth_yoy"],
                           r["net_profit_growth_qoq"], r["eps_growth_yoy"]), (10.7, 2.1, 6.2, 0.7, 8.8))
         self.assertEqual((r["operating_margin"], r["net_margin"], r["eps_ttm"]), (21.0, 15.9, 75.69))
+        self.assertIsNone(r["note"])
+        self.assertEqual(r["shares"], 20260000000.0 / 5)
+
+    def split_copy(self):
+        d = os.path.join(self.tmp.name, "split")
+        shutil.copytree(ADIR, d)
+        p = os.path.join(d, INFY_Q2)
+        with open(p, encoding="utf-8") as fh:
+            x = fh.read()
+        x, n1 = re.subn(r'(<in-capmkt:FaceValueOfEquityShareCapital[^>]*>)[^<]*', r"\g<1>2.5", x)
+        x, n2 = re.subn(r'(<in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations[^>]*>)[^<]*',
+                        r"\g<1>9.66", x)
+        self.assertEqual((n1, n2), (1, 1))
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(x)
+        return d
+
+    def test_split_leaves_out_eps_growth_and_ttm(self):
+        d = self.split_copy()
+        code, text, _ = run(["--symbols", "INFY", "--offline", d, "--now", NOW, "--json"])
+        self.assertEqual(code, 0)
+        r = json.loads(text)["companies"][0]
+        self.assertEqual((r["eps_ttm"], r["eps_growth_yoy"], r["revenue_growth_yoy"]), (None, None, 10.7))
+        self.assertIn("share count changed", r["note"])
+        code, text, _ = run(["--symbols", "INFY", "--offline", d, "--now", NOW])
+        self.assertIn("    note        share count changed", text)
+
+    def test_wrong_quarter_in_a_list_row_is_an_error(self):
+        d = os.path.join(self.tmp.name, "mix")
+        shutil.copytree(ADIR, d)
+        pj = os.path.join(d, "results-INFY.json")
+        with open(pj) as fh:
+            doc = json.load(fh)
+        n = 0
+        for r in doc["data"]:
+            if r["qe_Date"] == "30-JUN-2026" and r["consolidated"].lower() == "consolidated":
+                r["xbrl"] = r["xbrl"].rsplit("/", 1)[0] + "/" + INFY_Q2
+                n += 1
+        self.assertEqual(n, 1)
+        with open(pj, "w") as fh:
+            json.dump(doc, fh)
+        code, text, _ = run(["--symbols", "INFY", "--offline", d, "--now", NOW])
+        self.assertEqual(code, 2)
+        self.assertIn("but NSE lists it for", text)
 
     def test_text_report(self):
         code, text, _ = run(["--symbols", "INFY", "--offline", ADIR, "--now", NOW])
@@ -145,10 +190,11 @@ class Network(unittest.TestCase):
         doc = json.loads(read("results-INFY.json"))
 
         class Client:
-            urls, forgot = [], []
+            urls, forgot, caches = [], [], []
 
             def get_json(self, url, cache=True):
                 self.urls.append(url)
+                self.caches.append(cache)
                 return doc
 
             def get_text(self, url, cookie=True, cache=True):
@@ -160,6 +206,7 @@ class Network(unittest.TestCase):
         with self.assertRaises(res.ResultsError):
             res.fetch("M&M", c)
         self.assertTrue(c.urls[0].endswith("symbol=M%26M&type=Integrated%20Filing-%20Financials"))
+        self.assertEqual(c.caches, [False])
         self.assertEqual(len(c.forgot), 1)
 
     def test_blocked_exits_2_with_the_offline_hint(self):

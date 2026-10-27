@@ -16,5 +16,7 @@
 <in-capmkt:ProfitBeforeTax contextRef="OneD" decimals="-7" unitRef="INR">92290000000</in-capmkt:ProfitBeforeTax>
 <in-capmkt:ProfitLossForPeriod contextRef="OneD" decimals="-7" unitRef="INR">66660000000</in-capmkt:ProfitLossForPeriod>
 <in-capmkt:ProfitOrLossAttributableToOwnersOfParent contextRef="OneD" decimals="-7" unitRef="INR">66540000000</in-capmkt:ProfitOrLossAttributableToOwnersOfParent>
+<in-capmkt:PaidUpValueOfEquityShareCapital contextRef="OneD" decimals="-7" unitRef="INR">20240000000</in-capmkt:PaidUpValueOfEquityShareCapital>
+<in-capmkt:FaceValueOfEquityShareCapital contextRef="OneD" decimals="INF" unitRef="INRPerShare">5</in-capmkt:FaceValueOfEquityShareCapital>
 <in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="OneD" decimals="INF" unitRef="INRPerShare">16.17</in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
 </xbrli:xbrl>

@@ -50,7 +50,9 @@ QUARTERS = 5
 FIELDS = ("RevenueFromOperations", "InterestEarned", "OtherIncome", "FinanceCosts", "ProfitBeforeTax",
           "ProfitOrLossAttributableToOwnersOfParent", "ProfitLossForPeriod", "ProfitLossForThePeriod",
           "BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations",
-          "BasicEarningsPerShareAfterExtraordinaryItems")
+          "BasicEarningsPerShareAfterExtraordinaryItems", "PaidUpValueOfEquityShareCapital",
+          "FaceValueOfEquityShareCapital")
+SPLIT_NOTE = "share count changed by more than 5% (split, bonus or issue): EPS growth and TTM EPS are left out"
 
 
 class ResultsError(Exception):
@@ -127,8 +129,11 @@ def parse_xbrl(text):
             best, best_len = el.get("id"), n
     if best is None:
         raise ResultsError("the XBRL file has no context for the quarter ending %s" % end)
-    out = {"period_end": end}
+    out = {"period_end": end, "basis": None}
     for el in root:
+        if local(el) == "NatureOfReportStandaloneConsolidated" and el.text and el.text.strip():
+            out["basis"] = el.text.strip().lower()
+            continue
         if el.get("contextRef") == best and local(el) in FIELDS:
             try:
                 out[local(el)] = float(el.text)
@@ -148,8 +153,10 @@ def figures(f):
     op = None
     if not bank and None not in (f.get("ProfitBeforeTax"), f.get("FinanceCosts"), f.get("OtherIncome")):
         op = f["ProfitBeforeTax"] + f["FinanceCosts"] - f["OtherIncome"]
+    paid, face = f.get("PaidUpValueOfEquityShareCapital"), f.get("FaceValueOfEquityShareCapital")
+    shares = paid / face if paid and face and paid > 0 and face > 0 else None
     return {"period_end": f["period_end"], "revenue": rev, "net_profit": profit, "eps": eps,
-            "operating_profit": op, "bank": bank}
+            "operating_profit": op, "bank": bank, "shares": shares}
 
 
 def _months_back(d, n):
@@ -185,6 +192,11 @@ def metrics(symbol, name, basis, quarters, filed):
     end = q0["period_end"]
     prev, year = by_end.get(_months_back(end, 3)), by_end.get(_months_back(end, 12))
     run = [by_end.get(_months_back(end, 3 * i)) for i in range(4)]
+    s0 = q0.get("shares")
+    changed = lambda q: bool(q) and s0 is not None and q.get("shares") is not None \
+        and abs(q["shares"] / s0 - 1) > 0.05
+    skip_yoy = changed(year)
+    skip_ttm = any(changed(q) for q in run)
     ttm = lambda k: (round(sum(q[k] for q in run), 2) if all(q and q[k] is not None for q in run) else None)
     row = {"symbol": symbol, "name": name, "basis": basis, "period_end": end.isoformat(), "quarter": fy_label(end),
            "filed": filed.isoformat(), "bank": q0["bank"],
@@ -195,8 +207,9 @@ def metrics(symbol, name, basis, quarters, filed):
            "revenue_growth_qoq": growth(q0["revenue"], prev and prev["revenue"]),
            "net_profit_growth_yoy": growth(q0["net_profit"], year and year["net_profit"]),
            "net_profit_growth_qoq": growth(q0["net_profit"], prev and prev["net_profit"]),
-           "eps_growth_yoy": growth(q0["eps"], year and year["eps"]),
-           "revenue_ttm": ttm("revenue"), "net_profit_ttm": ttm("net_profit"), "eps_ttm": ttm("eps"),
+           "eps_growth_yoy": None if skip_yoy else growth(q0["eps"], year and year["eps"]),
+           "revenue_ttm": ttm("revenue"), "net_profit_ttm": ttm("net_profit"), "eps_ttm": None if skip_ttm else ttm("eps"),
+           "shares": s0, "note": SPLIT_NOTE if (skip_yoy or skip_ttm) else None,
            "source": "NSE integrated filing (financials)"}
     return row
 
@@ -206,7 +219,7 @@ def fetch(symbol, client=None, offline=None, standalone=False):
     if offline:
         doc = nse.read_json_file(os.path.join(offline, "results-%s.json" % symbol))
     else:
-        doc = client.get_json(LIST_URL % urllib.parse.quote(symbol, safe=""))
+        doc = client.get_json(LIST_URL % urllib.parse.quote(symbol, safe=""), cache=False)
     picked = pick(parse_list(doc, symbol), standalone)
     if not picked:
         raise ResultsError("NSE lists no integrated-filing results (from April 2025 on)")
@@ -217,7 +230,14 @@ def fetch(symbol, client=None, offline=None, standalone=False):
         else:
             text = client.get_text(f["xbrl"], cookie=False)
         try:
-            quarters.append(figures(parse_xbrl(text)))
+            facts = parse_xbrl(text)
+            name = f["xbrl"].rsplit("/", 1)[-1]
+            if facts["period_end"] != f["quarter"]:
+                raise ResultsError("%s is for the quarter ending %s, but NSE lists it for %s"
+                                   % (name, facts["period_end"], f["quarter"]))
+            if facts["basis"] and facts["basis"] != f["basis"]:
+                raise ResultsError("%s is a %s filing, but NSE lists it as %s" % (name, facts["basis"], f["basis"]))
+            quarters.append(figures(facts))
         except ResultsError as e:
             if client is not None:
                 client.forget(f["xbrl"])
@@ -249,6 +269,8 @@ def render(rows, errors, blocked):
         lines.append("    margins     operating %s, net %s" % (
             "n/a" if r["operating_margin"] is None else "%.1f%%" % r["operating_margin"],
             "n/a" if r["net_margin"] is None else "%.1f%%" % r["net_margin"]))
+        if r.get("note"):
+            lines.append("    note        %s" % r["note"])
     for e in errors:
         lines.append("error: " + e)
     for b in blocked:
@@ -284,8 +306,8 @@ def main(argv=None):
             try:
                 rows.append(fetch(sym, client, a.offline, a.standalone))
             except nse.NseBlocked as e:
-                blocked.append("%s (save results-%s.json and each XBRL file it links to in one folder, then rerun "
-                               "with --offline <folder>)" % (e, sym))
+                blocked.append("%s (save results-%s.json and the XBRL files of its five newest Consolidated rows "
+                               "(Standalone with --standalone) in one folder, then rerun with --offline <folder>)" % (e, sym))
             except (ResultsError, nse.NseError) as e:
                 errors.append("%s: %s" % (sym, e))
         if a.write:

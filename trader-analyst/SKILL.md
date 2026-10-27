@@ -43,14 +43,17 @@ For each stock, NSE's integrated filing (financials) list,
 `https://www.nseindia.com/api/integrated-filing-results?index=equities&symbol=<SYMBOL>&type=Integrated%20Filing-%20Financials`,
 and the XBRL file each row links to. One XBRL file is one quarter, so the
 tool reads the newest five: this quarter, the quarter before, the same
-quarter last year, and four in a row for TTM. NSE keeps a daily cache in
-`trader/cache/nse/`. Results filed before April 2025 used NSE's older page
+quarter last year, and four in a row for TTM. Each run asks NSE for the
+list again, so a filing made today shows up; the XBRL files, which never
+change, are kept in the tool's daily cache in `trader/cache/nse/`. Results filed before April 2025 used NSE's older page
 and are not read, so TTM and YoY need filings from mid-2025 on.
 
 If NSE blocks a request, the tool exits 2 and names the URL. Ask the user to
 open the list URL in a browser and save it as `results-<SYMBOL>.json`, then
-open each XBRL link it shows (the newest five quarters) and save each file
-under its own name in the same folder, and rerun with `--offline <folder>`.
+open the XBRL links of its five newest Consolidated rows (the five newest
+Standalone rows with `--standalone`; when a quarter appears twice, the newest
+filing) and save each file under its own name in the same folder, and rerun
+with `--offline <folder>`.
 
 ## The rules
 
@@ -63,6 +66,9 @@ under its own name in the same folder, and rerun with `--offline <folder>`.
   filing gives it (minority interest excluded).
 - Operating margin is (profit before tax + finance costs - other income) /
   revenue. It is empty for banks.
+- A split, bonus or share issue of more than 5% inside the five quarters
+  makes the quarters' EPS incomparable, so EPS growth and TTM EPS are left
+  out and the row carries a `note` saying so.
 - A growth figure is empty (`n/a`) when the comparison quarter is missing,
   never guessed.
 - Quarters follow the Indian financial year (April to March): 30 Sep 2026
