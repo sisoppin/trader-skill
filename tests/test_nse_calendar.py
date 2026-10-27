@@ -96,7 +96,7 @@ class Status(unittest.TestCase):
         st = self.st("2026-10-26T10:00")
         self.assertTrue(st["open"])
         self.assertEqual(st["phase"], "open")
-        self.assertEqual((st["opens"], st["closes"], st["mis_square_off"]), ("09:15", "15:30", "15:20"))
+        self.assertEqual((st["opens"], st["closes"], st["mis_square_off"]), ("09:15", "15:30", "15:25"))
         self.assertNotIn("next_open", st)
         pre = self.st("2026-10-26T09:05")
         self.assertFalse(pre["open"])
@@ -133,3 +133,38 @@ class Status(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SpecialSessions(unittest.TestCase):
+    def test_save_load_and_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "special_sessions.json")
+            cal.save_session("2026-11-08", "18:00", "19:00", "Muhurat trading", path)
+            sessions = cal.load_sessions(path)
+            calendar = cal.Calendar({}, (2026,), sessions)
+            st = calendar.status(cal.parse_now("2026-11-08T18:15"))
+            self.assertTrue(st["open"])
+            self.assertEqual((st["opens"], st["closes"], st["mis_square_off"], st["special"]),
+                             ("18:00", "19:00", None, "Muhurat trading"))
+            before = calendar.status(cal.parse_now("2026-11-08T10:00"))
+            self.assertFalse(before["open"])
+            self.assertEqual(before["next_open"], "2026-11-08 18:00")
+            self.assertEqual(calendar.next_open(cal.parse_now("2026-11-06T16:00")).strftime("%Y-%m-%d %H:%M"),
+                             "2026-11-08 18:00")
+            cal.save_session("2026-11-08", None, None, None, path, remove=True)
+            self.assertEqual(cal.load_sessions(path), {})
+
+    def test_bad_input_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "s.json")
+            with self.assertRaises(cal.CalendarError):
+                cal.save_session("2026-11-08", "19:00", "18:00", "x", path)
+            with self.assertRaises(cal.CalendarError):
+                cal.save_session("8 Nov", "18:00", "19:00", "x", path)
+            with open(path, "w") as fh:
+                fh.write('{"sessions": {"2026-11-08": {"open": "7pm"}}}')
+            with self.assertRaises(cal.CalendarError):
+                cal.load_sessions(path)
+
+    def test_missing_file_means_none(self):
+        self.assertEqual(cal.load_sessions(os.path.join("no", "such", "file.json")), {})

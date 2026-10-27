@@ -194,7 +194,8 @@ connector. Check anything that matters in Kite before you act on it.
 
 **Taxes and charges change.** `/trader-tax` does the arithmetic on lots, the
 12-month line, set-off and the yearly LTCG exemption for listed Indian
-equity, and `/trader-budget` estimates Zerodha's charges. Both use built-in
+equity, and `/trader-budget` estimates Zerodha's charges (including the DP
+charge on every delivery sale, about Rs 15 per stock per day). Both use built-in
 rates for FY 2026-27 that you can override in `trader/config.json`
 (`tax_rules`, `charges`): check them each financial year. It is not tax
 advice.

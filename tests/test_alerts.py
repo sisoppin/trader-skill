@@ -183,11 +183,29 @@ class Cli(unittest.TestCase):
         code, text, _ = run(["clock", "--now", "2026-10-26T10:00", "--holidays", self.hol])
         self.assertEqual(code, 0)
         self.assertIn("NSE OPEN", text)
-        self.assertIn("about 15:20", text)
+        self.assertIn("about 15:25", text)
         code, text, _ = run(["clock", "--now", "2026-12-25T10:00", "--holidays", self.hol])
         self.assertEqual(code, 1)
         self.assertIn("NSE holiday: Christmas", text)
         self.assertIn("Next open: 2026-12-28 09:15 IST.", text)
+
+    def test_special_session(self):
+        ses = os.path.join(self.d, "special_sessions.json")
+        code, text, _ = run(["holidays", "session", "--date", "2026-11-08", "--open", "18:00", "--close", "19:00",
+                             "--name", "Muhurat trading", "--sessions", ses])
+        self.assertEqual(code, 0)
+        self.assertIn("2026-11-08  18:00 to 19:00  Muhurat trading", text)
+        code, text, _ = run(["clock", "--now", "2026-11-08T18:30", "--holidays", self.hol, "--sessions", ses])
+        self.assertEqual(code, 0)
+        self.assertIn("NSE OPEN, special session: Muhurat trading", text)
+        self.assertIn("Today's special session (Muhurat trading): 18:00 to 19:00 IST", text)
+        code, text, _ = run(["clock", "--now", "2026-11-08T10:00", "--holidays", self.hol, "--sessions", ses])
+        self.assertEqual(code, 1)
+        self.assertIn("Next open: 2026-11-08 18:00 IST.", text)
+        code, _, err = run(["holidays", "session", "--date", "2026-11-08", "--sessions", ses])
+        self.assertEqual(code, 1)
+        self.assertIn("--open and --close", err)
+        self.assertEqual(run(["holidays", "session", "--date", "2026-11-08", "--remove", "--sessions", ses])[0], 0)
         _, text, _ = run(["clock", "--now", "2027-01-04T10:00", "--holidays", self.hol])
         self.assertIn("holiday list for 2027 is not loaded", text)
 
@@ -228,7 +246,8 @@ class MisWarning(unittest.TestCase):
         rings, st = self.ev("2026-10-26T15:05")
         self.assertEqual(rings[0]["message"],
                          "MIS positions still open at 15:05 IST: INFY +5. Zerodha squares MIS off from about "
-                         "15:20 IST; close them yourself first if you want to choose the price.")
+                         "15:25 IST and charges Rs 50 + GST for each one; close them yourself first if you "
+                         "want to choose the price.")
         self.assertEqual(self.ev("2026-10-26T15:10", st)[0], [])
 
     def test_quiet_without_open_mis_or_outside_the_session(self):

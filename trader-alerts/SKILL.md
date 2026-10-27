@@ -3,7 +3,7 @@ name: trader-alerts
 description: >-
   Price Alerts for NSE stocks. Rings when a price target, a stop, a percent
   move from the previous close, the NSE opening bell or an open MIS position
-  near Zerodha's 15:20 square-off hits, each ringing once so you are not
+  near Zerodha's 15:25 square-off hits, each ringing once so you are not
   spammed. Knows NSE hours in IST (09:15 to 15:30) and NSE trading holidays,
   reads live quotes and positions that Claude saves from the Kite connector,
   and writes trader/prices.json for the other skills. Use when the user says
@@ -83,7 +83,13 @@ built in (from NSE's holiday master, read 2026-10-26). `holidays refresh`
 saves NSE's current list. If NSE blocks the request, open the URL it prints
 in a browser, save the page, and run `holidays refresh --file <saved file>`.
 For a year with no list loaded, `clock` says so: run the refresh once NSE
-publishes the new year. Zerodha squares MIS positions off from about 15:20.
+publishes the new year. Zerodha squares MIS positions off from about 15:25
+(moved from 15:20 in December 2025) and charges Rs 50 + GST for each one.
+Special sessions (Muhurat trading, a Saturday budget-day session) are not in
+NSE's holiday list: when NSE announces one, add it with
+`alerts.py holidays session --date 2026-11-08 --open 18:00 --close 19:00 --name "Muhurat trading"`
+(times from NSE's circular). The clock, alerts and the risk check then treat
+that window as open.
 Muhurat trading on Diwali is not modelled.
 
 ## Steps

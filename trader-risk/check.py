@@ -19,16 +19,23 @@ What blocks an order:
 
   format       not a bare NSE tradingsymbol; transaction_type not BUY or
                SELL; quantity not a whole number above 0; validity not DAY;
-               variety not regular or amo; a LIMIT order without a price;
+               variety not regular or amo; a LIMIT order without a price, or
+               with a price in fractions of a paisa (Kite rejects prices off
+               the tick); a MARKET order without "market_protection" (Kite
+               rejects API market orders without it: use "-1" for automatic);
                SL and SL-M (stop-loss) orders, which this pack does not use
   asset        anything not on NSE; F&O contracts (always)
   product      anything but CNC (delivery) and MIS (intraday); MIS while
                "allow_mis" is false
   blocked      a symbol on your "blocked" list
-  hours        outside 09:15 to 15:30 IST on an NSE trading day, unless
-               "allow_amo" is true and the order is variety amo; any day
-               in a year whose NSE holiday list is not loaded
-  price        no fresh Kite quote; a quote without circuit limits (use the full
+  hours        outside 09:15 to 15:30 IST on an NSE trading day (or the
+               window of a special session you added with alerts.py
+               holidays session), unless "allow_amo" is true and the order
+               is variety amo; any day in a year whose NSE holiday list is
+               not loaded
+  price        no fresh Kite quote; a quote whose last trade is not from
+               today's session while NSE is open (suspended or not trading,
+               so the price is stale); a quote without circuit limits (use the full
                quotes call); an order without est_charges (trader-budget writes it); MARKET while "allow_market_orders" is
                false; a LIMIT price more than "max_limit_deviation_pct"
                from the last price; a price outside today's circuit band
@@ -39,7 +46,9 @@ What blocks an order:
   short        a CNC sell of more than you hold less what open sell orders
                in Kite's order book already cover; an MIS sell that would
                leave you short, unless "allow_short" is true
-  intraday     a new MIS position after "mis_cutoff" (15:00 IST); MIS
+  intraday     any MIS order in a special session (Zerodha sets its own
+               square-off time on those days); a new MIS position after
+               "mis_cutoff" (15:00 IST); MIS
                exposure over "max_mis_exposure_pct" of your equity margin;
                any new MIS position once the day's loss reaches
                "daily_loss_limit"
@@ -93,7 +102,7 @@ NUMBERS = ("cash_buffer_pct", "max_position_pct", "max_order_value", "min_order_
            "max_limit_deviation_pct", "max_mis_exposure_pct", "daily_loss_limit")
 LEGACY = ("paper", "max_order_usd", "min_order_usd", "allow_options", "allow_margin", "fractional", "broker")
 KITE_FIELDS = ("exchange", "tradingsymbol", "transaction_type", "quantity", "product", "order_type",
-               "price", "trigger_price", "validity", "variety")
+               "price", "trigger_price", "validity", "variety", "market_protection")
 FNO = re.compile(r"\d.*(FUT|CE|PE)$")
 NOT_PLACED = {"REJECTED", "CANCELLED"}
 NOT_OPEN = {"COMPLETE", "REJECTED", "CANCELLED"}
@@ -366,6 +375,15 @@ def check(orders, cfg, data, now, cal):
             est_charges = 0.0
         if typ == "LIMIT" and not (price and price > 0):
             reasons.append("format: a LIMIT order needs a price above 0")
+        elif typ == "LIMIT" and abs(price * 100 - round(price * 100)) > 1e-6:
+            reasons.append("format: limit price %r is in fractions of a paisa; Kite only takes prices on the tick"
+                           % o.get("price"))
+        if typ == "MARKET":
+            mp = _f(o.get("market_protection"))
+            if mp is None or not (mp == -1 or 0 < mp <= 100):
+                reasons.append("format: a MARKET order needs \"market_protection\" (\"-1\" for automatic, or a "
+                               "percentage); Kite rejects API market orders without it, got %r"
+                               % o.get("market_protection"))
         if str(o.get("validity") or "DAY").strip().upper() != "DAY":
             reasons.append("format: validity must be DAY, got %r" % o.get("validity"))
         if variety not in ("regular", "amo"):
@@ -375,6 +393,9 @@ def check(orders, cfg, data, now, cal):
                            % o.get("product"))
         if product == "MIS" and not c["allow_mis"]:
             reasons.append("product: MIS (intraday) is off (\"allow_mis\": false)")
+        if product == "MIS" and st.get("special"):
+            reasons.append("intraday: no MIS in a special session (%s); Zerodha sets its own square-off time "
+                           "on those days" % st["special"])
         if sym.upper() in blocked:
             reasons.append("blocked: %s is on your blocked list" % sym)
 
@@ -397,6 +418,13 @@ def check(orders, cfg, data, now, cal):
             q = quotes.get(sym.upper())
             if not q:
                 reasons.append("data: no fresh Kite quote for NSE:%s; add it to the quotes call" % sym)
+            elif st["open"]:
+                traded = str(q.get("time") or "")[:10]
+                if not traded:
+                    warns.append("the Kite quote for NSE:%s has no last trade time; check it is trading today" % sym)
+                elif traded != st["date"]:
+                    reasons.append("price: NSE:%s last traded on %s, not today; it may be suspended or not "
+                                   "trading, so %s is a stale price" % (sym, traded, inr(q["price"])))
         if typ == "MARKET" and not c["allow_market_orders"]:
             reasons.append("price: MARKET orders are off (\"allow_market_orders\": false); use a LIMIT price")
         ref = price if typ == "LIMIT" else (q["price"] if q else None)
@@ -462,7 +490,7 @@ def check(orders, cfg, data, now, cal):
                 if opening:
                     if now.time() >= c["mis_cutoff"]:
                         reasons.append("intraday: no new MIS positions after %s IST; Zerodha squares MIS off "
-                                       "from about 15:20" % c["mis_cutoff"].strftime("%H:%M"))
+                                       "from about 15:25" % c["mis_cutoff"].strftime("%H:%M"))
                     if value is not None and acct["equity"] is not None:
                         after = acct["mis_exposure"] + value
                         limit = acct["equity"] * c["max_mis_exposure_pct"] / 100.0
@@ -561,6 +589,7 @@ def main(argv=None):
     ap.add_argument("--config", default="trader/config.json")
     ap.add_argument("--kite-dir", default=kite_snapshot.DIR, help="where the Kite snapshots are")
     ap.add_argument("--holidays", default=nse_calendar.CACHE, help="the cached NSE holiday list")
+    ap.add_argument("--sessions", default=nse_calendar.SESSIONS, help="special sessions (Muhurat and the like)")
     ap.add_argument("--now", help="pretend it is this time (ISO; no offset = IST)")
     ap.add_argument("--out", default="trader/state/risk.json", help="where the verdicts are recorded")
     ap.add_argument("--no-write", action="store_true", help="do not record the verdicts")
@@ -575,7 +604,8 @@ def main(argv=None):
             raise RiskError("no orders in %s" % a.orders)
         cfg = read_json(a.config, "config", required=False) or {}
         now = nse_calendar.parse_now(a.now)
-        cal = nse_calendar.Calendar(*nse_calendar.load_holidays(a.holidays))
+        cal = nse_calendar.Calendar(*nse_calendar.load_holidays(a.holidays),
+                                    sessions=nse_calendar.load_sessions(a.sessions))
         res = check(orders, cfg, load_data(a.kite_dir, now), now, cal)
         if not a.no_write:
             d = os.path.dirname(a.out)

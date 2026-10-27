@@ -71,7 +71,10 @@ class TicketShape(unittest.TestCase):
         self.assertEqual(ticket.plain(sell),
                          "SELL 1 share of INFY, limit Rs 1,612.50, intraday (MIS), good for today, after-market order")
         self.assertIn("Rs 9,663.51 in", ticket.estimate(sell))
-        self.assertEqual(set(ticket.tool_input(INFY)), set(ticket.KITE_FIELDS) - {"trigger_price"})
+        self.assertEqual(set(ticket.tool_input(INFY)), set(ticket.KITE_FIELDS) - {"trigger_price", "market_protection"})
+        mkt = dict(INFY, order_type="MARKET", price=None, market_protection="-1")
+        self.assertEqual(ticket.tool_input(mkt)["market_protection"], "-1")
+        self.assertNotEqual(ticket.fingerprint(mkt), ticket.fingerprint(dict(mkt, market_protection="5")))
         self.assertNotIn("est_value", ticket.tool_input(INFY))
 
     def test_fingerprint_is_shared_with_the_risk_check(self):
