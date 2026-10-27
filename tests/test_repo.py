@@ -5,13 +5,13 @@ import unittest
 
 from _load import ROOT
 
-SKILLS = ["trader-copycat", "trader-news", "trader-budget", "trader-pelosi", "trader-analyst",
+SKILLS = ["trader-copycat", "trader-news", "trader-budget", "trader-insider", "trader-analyst",
           "trader-screener", "trader-risk", "trader-broker", "trader-tax", "trader-alerts",
           "trader-rebalance"]
 ABOUT = ("11 Claude skills that copy the investors you trust, watch the news and Congress, size every "
          "trade to your budget, and never place an order without your yes.")
 # skills that can lead to an order carry the safety block
-ORDER_PATH = ["trader-copycat", "trader-budget", "trader-pelosi", "trader-risk", "trader-broker",
+ORDER_PATH = ["trader-copycat", "trader-budget", "trader-insider", "trader-risk", "trader-broker",
               "trader-tax", "trader-alerts", "trader-rebalance"]
 # helper modules copied into several skills; every copy must be the same bytes
 SHARED = ["kite_snapshot.py", "nse.py", "nse_calendar.py", "nse_symbols.py", "rupees.py", "charges.py",
@@ -110,7 +110,7 @@ class Repo(unittest.TestCase):
             self.assertEqual(len(texts), 1, "copies of %s differ: %s" % (name, copies))
 
     def test_converted_order_path_skills_say_live(self):
-        for s in ("trader-budget", "trader-risk", "trader-broker", "trader-rebalance", "trader-tax"):
+        for s in ("trader-budget", "trader-risk", "trader-broker", "trader-rebalance", "trader-tax", "trader-insider"):
             _, text = frontmatter(os.path.join(ROOT, s, "SKILL.md"))
             low = " ".join(text.lower().split())
             self.assertIn("live", low, s)
