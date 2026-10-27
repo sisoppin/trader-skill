@@ -258,7 +258,7 @@ def main(argv=None):
             n = nse_symbols.normalize(s)
             if n not in symbols:
                 symbols.append(n)
-        if a.cmd in ("check", "pit") and not symbols:
+        if not symbols and not (a.cmd == "deals" and a.every_symbol):
             raise InsiderError("which stocks? pass --symbols INFY TCS, or save Kite holdings / write trader/targets.json")
         if a.file and (a.cmd != "pit" or len(symbols) != 1):
             raise InsiderError("--file holds one symbol's insider trades: use it with pit and exactly one --symbols")

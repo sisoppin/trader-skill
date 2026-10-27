@@ -99,6 +99,17 @@ class Cli(unittest.TestCase):
         self.assertEqual(len(json.loads(text)["rows"]), 6)
         self.assertFalse(os.path.exists(self.state))
 
+    def test_deals_without_a_watch_list(self):
+        empty = os.path.join(self.tmp.name, "empty")
+        base = ["deals", "--kite-dir", empty, "--targets", os.path.join(empty, "t.json"), "--offline", IDIR,
+                "--state", self.state, "--out", self.out, "--now", NOW]
+        code, _, err = run(base)
+        self.assertEqual(code, 2)
+        self.assertIn("which stocks?", err)
+        code, text, _ = run(base + ["--every-symbol"])
+        self.assertEqual(code, 0)
+        self.assertIn("bulk deal", text)
+
     def test_file_only_for_one_symbol_pit(self):
         path = os.path.join(IDIR, "pit-INFY.json")
         code, text, _ = run(["pit", "--symbols", "INFY", "--file", path, "--days", "365", "--state", self.state,
