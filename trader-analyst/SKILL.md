@@ -1,104 +1,102 @@
 ---
 name: trader-analyst
 description: >-
-  The Earnings Analyst. Reads a company's reported numbers straight from SEC
-  EDGAR (XBRL company facts from its 10-Qs and 10-Ks, plus the latest earnings
-  8-K and its press release) and sums up what changed: revenue, gross,
-  operating and net margins, net income and diluted EPS, quarter by quarter,
-  each against the same quarter a year earlier, with the trailing twelve
-  months. Writes a metrics file the screener reads. Use when the user says
-  "how did Apple's earnings look", "analyze the earnings", "what changed this
-  quarter", "is revenue growing", "check the 10-Q", "compare margins", or
-  "run the analyst on my holdings".
-argument-hint: "[tickers]"
+  The Earnings Analyst for NSE stocks. Reads the quarterly financial results
+  companies file with NSE (the XBRL behind each integrated filing) and sums
+  up what changed: revenue, net profit, EPS, operating and net margin, each
+  against the quarter before (QoQ) and the same quarter a year earlier
+  (YoY), with the trailing twelve months. Handles banks and companies that
+  file only standalone results. Writes trader/metrics.json for the
+  screener. Use when the user says "how were Infosys's results", "analyze
+  the results", "what changed this quarter", "is revenue growing", "Q2
+  numbers", "compare margins", or "run the analyst on my holdings".
+argument-hint: "[symbols]"
 ---
 
 # trader-analyst
 
-Earnings season moves stocks, and the press release is written to put the
-best number first. This skill reads the numbers the company actually filed
-with the SEC, lines them up quarter by quarter, and says plainly what changed.
+Results season moves stocks, and the press release puts the best number
+first. This skill reads the numbers the company actually filed with NSE,
+lines up the quarters and says plainly what changed.
 
-Tool in this folder (standard library Python, no keys):
+`${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
 
 ```bash
-python3 "${CLAUDE_SKILL_DIR}/facts.py" --help
+python3 "${CLAUDE_SKILL_DIR}/results.py"                          # Kite holdings + trader/targets.json
+python3 "${CLAUDE_SKILL_DIR}/results.py" --symbols INFY TCS HDFCBANK
+python3 "${CLAUDE_SKILL_DIR}/results.py" --symbols INFY --standalone
+python3 "${CLAUDE_SKILL_DIR}/results.py" --symbols INFY --write   # -> trader/metrics.json
+python3 "${CLAUDE_SKILL_DIR}/results.py" --symbols INFY --offline <folder>
 ```
-
-It needs the SEC User-Agent (`sec_user_agent` in `trader/config.json`, or
-`SEC_USER_AGENT`): "Your Name you@example.com" with the user's real name and
-email. It refuses to call SEC without one.
 
 ## What it reads and writes
 
-- Reads `https://data.sec.gov/api/xbrl/companyfacts/CIK##########.json` (every
-  number the company has tagged in its filings), the company's submissions
-  list (for the newest 10-Q or 10-K and the newest 8-K with item 2.02,
-  "Results of Operations") and that 8-K's folder to find the press release
-  (the EX-99.1 exhibit).
-- Writes `trader/metrics.json` with `--metrics`: one row per company (TTM
-  revenue, net income and diluted EPS, the latest margins and growth) for
-  `/trader-screener`. `metrics.example.json` in this folder is a real run
-  for AAPL, AXP, GOOGL, KO and BAC on 2026-10-13.
+| file | what |
+| --- | --- |
+| `trader/kite/holdings.json`, `trader/targets.json` | the stocks to read when `--symbols` is not given |
+| `trader/metrics.json` | with `--write`: one row per stock for `/trader-screener`; `complete` is false when a stock could not be read |
+| `metrics.example.json` (this folder) | a real row: INFY, Q2 FY27 |
+
+## Where the numbers come from
+
+For each stock, NSE's integrated filing (financials) list,
+`https://www.nseindia.com/api/integrated-filing-results?index=equities&symbol=<SYMBOL>&type=Integrated%20Filing-%20Financials`,
+and the XBRL file each row links to. One XBRL file is one quarter, so the
+tool reads the newest five: this quarter, the quarter before, the same
+quarter last year, and four in a row for TTM. NSE keeps a daily cache in
+`trader/cache/nse/`. Results filed before April 2025 used NSE's older page
+and are not read, so TTM and YoY need filings from mid-2025 on.
+
+If NSE blocks a request, the tool exits 2 and names the URL. Ask the user to
+open the list URL in a browser and save it as `results-<SYMBOL>.json`, then
+open each XBRL link it shows (the newest five quarters) and save each file
+under its own name in the same folder, and rerun with `--offline <folder>`.
 
 ## The rules
 
-- **Filed numbers first.** The table comes from XBRL facts the company filed.
-  Use the press release for context (guidance, segment colour), and say which
-  numbers came from where.
-- **Compare like with like.** Growth is against the same quarter a year
-  earlier. Quarter-on-quarter changes are shown but many businesses are
-  seasonal (Apple's December quarter is always its biggest).
-- **Say what is derived.** Companies do not file a Q4 10-Q. The fourth
-  quarter is the 10-K year minus the three quarters inside it and is marked
-  "derived"; derived EPS is approximate.
-- **Say when the data lags.** SEC's facts API can trail a filing. When the
-  newest 10-Q is later than the newest quarter in the facts, the tool prints a
-  NOTE with the link: read the 10-Q itself before summarising.
-- **Flag one-offs.** When net income is above operating income, gains outside
-  the business (investment marks, tax items) are inside it. The tool says so.
-  Banks and insurers have no gross margin: blank, not zero.
+- Consolidated (the whole group) by default; `--standalone` for the parent
+  company alone. A company that files only standalone is read standalone,
+  and the row says `basis: standalone`.
+- A revised filing replaces the original for the same quarter.
+- Revenue is revenue from operations; for a bank it is interest earned.
+- Net profit is the profit attributable to the company's owners when the
+  filing gives it (minority interest excluded).
+- Operating margin is (profit before tax + finance costs - other income) /
+  revenue. It is empty for banks.
+- A growth figure is empty (`n/a`) when the comparison quarter is missing,
+  never guessed.
+- Quarters follow the Indian financial year (April to March): 30 Sep 2026
+  is Q2 FY27.
 
 ## Steps
 
-1. Run it for the companies in question (or every ticker in
-   `trader/targets.json`):
+1. Run `results.py` for the stocks the user means (exit 0 all read, 2 when
+   any stock could not be read: read the error or blocked lines).
+2. Lead with what changed: revenue and net profit growth YoY and QoQ, then
+   margins and EPS. Say "n/a" plainly when a comparison is missing.
+3. If the user wants to screen, run with `--write` and hand
+   `trader/metrics.json` to `/trader-screener`.
 
-   ```bash
-   python3 "${CLAUDE_SKILL_DIR}/facts.py" AAPL
-   python3 "${CLAUDE_SKILL_DIR}/facts.py" AAPL AXP GOOGL KO BAC --metrics trader/metrics.json
-   ```
+## Example
 
-   `--quarters 8` shows two years, `--json` everything machine-readable,
-   `--cik` a company without a ticker.
-2. Open the latest earnings press release (the EX-99 link) and the 10-Q when
-   the numbers need context, and read them.
-3. Write the summary: one line on the quarter (revenue, EPS, growth), one on
-   margins, one on anything unusual (a one-off, a derived quarter, data that
-   lags), and the links. Plain words, real numbers, no adjectives the numbers
-   do not support.
-
-## Example: the reel's top holding
-
-`facts.py AAPL` (2026-10-13): quarter ending 2026-06-27 (fiscal Q3 2026),
-revenue $109.42B, +16.4% against a year earlier, net income $29.79B (+27.1%),
-diluted EPS $2.02 (+28.7%); gross margin 50.1% (+0.8 points on the quarter
-before); last four quarters $466.8B revenue and $8.71 EPS. Press release:
-the EX-99.1 of the 8-K filed 2026-07-30. For Coca-Cola the tool notes that
-SEC's facts stop at 2026-04-03 while the 10-Q for 2026-07-03 is already filed,
-so the summary reads that 10-Q directly.
+INFY, Q2 FY27 (quarter ended 30 Sep 2026, consolidated, filed 23 Oct 2026):
+revenue Rs 49,244 cr (+10.7% YoY, +2.1% QoQ), net profit Rs 7,823 cr (+6.2%
+YoY, +0.7% QoQ), EPS Rs 19.32 (+8.8% YoY), TTM EPS Rs 75.69, operating
+margin 21.0%, net margin 15.9%.
 
 ## What it never does
 
-- Never says a stock is cheap, expensive, a buy or a sell. It reports what
-  the company filed.
-- Never invents a number the filings do not have, or estimates a quarter it
-  cannot derive.
-- Never calls SEC without the User-Agent, and stays well under 10 requests a
-  second.
+It never forecasts, never fills a missing quarter with an estimate, and
+never calls a result good or bad on its own: it reports the change.
 
 ## Safety
 
-Education and tooling, not financial advice. This skill only reads filings.
-Nothing places an order except `/trader-broker`, after `/trader-risk` passes
-and the user types an explicit yes for that order.
+- Education and tooling, not financial advice. Nothing here is a recommendation to buy or sell.
+- Every order in this pack is a LIVE order with real money on your Zerodha account: Kite has no paper account.
+- Nothing in this pack places an order except through trader-broker, and only when all three hold:
+  trader-risk passed that exact order in the last 10 minutes, the user typed an explicit yes for that
+  one order in the chat, and the user approved the Kite connector's order card because its order tool
+  is set to "Needs approval". Never set an order tool to "Always allow".
+- No F&O, no NRML, no stop-loss orders. MIS (intraday), MARKET orders, short selling and after-market
+  orders stay off unless the user turns them on in trader/config.json themselves.
+- Kite logins live in the connector, never in the chat or in files.

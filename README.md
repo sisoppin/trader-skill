@@ -58,7 +58,7 @@ environment variable.
 | `/trader-news` | News Monitor | Watches NSE corporate announcements (results, dividends, board meetings, deals, pledges) for every stock you hold and shows each new one once. |
 | `/trader-budget` | Budget Manager | Sizes every position to your rupee budget in whole NSE shares at the Kite price, keeps a cash buffer, caps any one stock and estimates Zerodha's charges. |
 | `/trader-insider` | Smart Money Tracker | Reads SEBI insider-trade disclosures (promoters, directors, key people) and NSE bulk and block deals in your stocks, and alerts you once per new filing. |
-| `/trader-analyst` | Earnings Analyst | Pulls each company's reported numbers from SEC XBRL (revenue, net income, diluted EPS, margins, growth) and its latest earnings release. |
+| `/trader-analyst` | Earnings Analyst | Reads each company's quarterly results filed with NSE (revenue, net profit, EPS, margins, YoY and QoQ growth, TTM) and writes the metrics the screener reads. |
 | `/trader-screener` | Stock Screener | Screens companies against your own rules and ranks what passes. |
 | `/trader-risk` | Risk Manager | Checks every LIVE order against your limits and fresh Kite data (hours, price band, cash, intraday rules) and blocks anything over them. |
 | `/trader-broker` | Order Executor | Turns an approved order into the exact ticket the Kite connector receives, marked LIVE, and records your yes. It never places anything itself. |
@@ -115,7 +115,7 @@ python3 trader-copycat/edgar13f.py filings 1067983                     # its 13F
 python3 trader-copycat/edgar13f.py --help                              # holdings, diff, copy
 python3 trader-news/news.py --symbols INFY TCS --days 7                  # NSE announcements
 python3 trader-insider/insider.py --symbols INFY                       # insider trades + bulk/block deals
-python3 trader-analyst/facts.py AAPL                                   # quarters, growth, EPS
+python3 trader-analyst/results.py --symbols INFY --write               # results -> trader/metrics.json
 python3 trader-screener/screen.py trader/metrics.json --rules trader/rules.json
 python3 trader-budget/size.py --budget 50000 --write                   # -> trader/orders.json
 python3 trader-risk/check.py                                           # PASS / BLOCK per order
@@ -174,7 +174,7 @@ trader-copycat/    SKILL.md, edgar13f.py, filers.json, share_classes.json, targe
 trader-news/       SKILL.md, news.py, watchlist.py
 trader-budget/     SKILL.md, size.py, charges.py, config.example.json, targets.example.json
 trader-insider/    SKILL.md, insider.py
-trader-analyst/    SKILL.md, facts.py, metrics.example.json
+trader-analyst/    SKILL.md, results.py, metrics.example.json
 trader-screener/   SKILL.md, screen.py, rules.example.json
 trader-risk/       SKILL.md, check.py
 trader-broker/     SKILL.md, ticket.py
