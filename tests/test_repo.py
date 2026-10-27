@@ -34,6 +34,14 @@ def every_text_file():
                 yield os.path.join(base, f)
 
 
+def us_terms():
+    terms = [re.compile(r"(?<![a-z])%s(?![a-z])" % t, re.I) for t in
+             ("sec", "edgar", "cusip", "alpaca", "nyse", "usd", "openfigi", "yahoo", "ibkr", "pelosi",
+              "congress", "house clerk", "stooq")]
+    terms += [re.compile(r"(?<![a-z0-9])13f(?![a-z])", re.I), re.compile(r"(?<!no )wash[-_ ]?sales?", re.I)]
+    return terms
+
+
 class Repo(unittest.TestCase):
     def test_eleven_skill_folders_at_the_root(self):
         found = sorted(d for d in os.listdir(ROOT)
@@ -114,9 +122,9 @@ class Repo(unittest.TestCase):
 
     def test_no_us_terms_left(self):
         # skill code, docs, manifests and fixtures; docs/ (the spec and the plans) and the test code are history
-        terms = [re.compile(r"\bSEC\b"), re.compile(r"EDGAR"), re.compile(r"\b13F"), re.compile(r"CUSIP", re.I),
-                 re.compile(r"Alpaca", re.I), re.compile(r"NYSE"), re.compile(r"(?<!no )wash[- ]sale", re.I),
-                 re.compile(r"\bUSD\b")]
+        terms = us_terms()
+        # (path, pattern text) pairs that are allowed: trader-risk names the US-era config keys it warns about
+        allowed = {("trader-risk/check.py", "(?<![a-z])usd(?![a-z])")}
         hits = []
         for path in every_text_file():
             rel = os.path.relpath(path, ROOT)
@@ -124,8 +132,18 @@ class Repo(unittest.TestCase):
                 continue
             with open(path, encoding="utf-8", errors="replace") as fh:
                 for n, line in enumerate(fh, 1):
-                    hits += ["%s:%d: %s" % (rel, n, line.strip()[:80]) for t in terms if t.search(line)]
-        self.assertEqual(hits, [])
+                    for t in terms:
+                        if t.search(line) and (rel.replace(os.sep, "/"), t.pattern) not in allowed:
+                            hits.append("%s:%d: %s: %s" % (rel, n, t.pattern, line.strip()[:80]))
+        self.assertEqual(hits, [], "\n" + "\n".join(hits))
+
+    def test_us_term_patterns_catch_the_old_forms(self):
+        terms = us_terms()
+        for s in ("SEC_USER_AGENT", "https://www.sec.gov/cgi-bin/browse-edgar", "value_usd", "parse_13f",
+                  "wash_sale_days", "Nyse calendar", "OpenFIGI"):
+            self.assertTrue(any(t.search(s) for t in terms), s)
+        for s in ("India has no wash-sale rule", "second", "NSE", "Securities", "secAcq"):
+            self.assertFalse(any(t.search(s) for t in terms), s)
 
     def test_shared_helpers_are_identical(self):
         for name in SHARED:
