@@ -35,6 +35,7 @@ python3 "${CLAUDE_SKILL_DIR}/screen.py" --help
 | `trader/rules.json` | the user's rules; start from `rules.example.json` in this folder |
 | `trader/shortlist.json` | with `--out`: who passed, their score and why, who failed and why |
 
+- The price date shown is the oldest price used, so a symbol not re-quoted since an old run is visible.
 - CSV numbers may carry `Rs`, `Rs.`, `INR` or the rupee sign, `%`, and
   commas in Indian (1,23,456) or international grouping.
 - With prices it adds `price`, `pe` (price / TTM EPS, only when EPS is
@@ -89,7 +90,7 @@ Metric names come from `/trader-analyst`: `revenue_growth_yoy`,
    ```
 
    Exit code 1 means nothing passed: say so and show the closest misses.
-   If the output starts with a WARNING, say which stocks were never
+   If the output has a WARNING line, say which stocks were never
    screened.
 4. Report the shortlist with the reasons, the misses with the numbers that
    failed, and the dates the numbers are from (the quarter each company's

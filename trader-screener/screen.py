@@ -79,8 +79,13 @@ def load_metrics(path):
         raise ScreenError("no such file: %s" % path)
     if path.lower().endswith(".csv"):
         with open(path, newline="", encoding="utf-8-sig") as fh:
-            rows = [{(k or "").strip(): to_number(v) for k, v in r.items()}
-                    for r in csv.DictReader(fh)]
+            rows = []
+            reader = csv.DictReader(fh)
+            for r in reader:
+                if None in r:
+                    raise ScreenError("row %d of %s has more cells than the header: put numbers with commas "
+                                      "in quotes" % (reader.line_num, path))
+                rows.append({(k or "").strip(): to_number(v) for k, v in r.items()})
     else:
         with open(path, encoding="utf-8") as fh:
             try:
@@ -121,17 +126,22 @@ def add_prices(rows, prices_path):
     with open(prices_path, encoding="utf-8") as fh:
         data = json.load(fh)
     prices = {k.upper(): v for k, v in (data.get("prices", data) or {}).items()}
+    detail = {k.upper(): v for k, v in (data.get("detail") or {}).items()} if isinstance(data, dict) else {}
+    used = []
     for r in rows:
         p = to_number(prices.get(r["ticker"]))
         if not isinstance(p, (int, float)) or p <= 0:
             continue
         r["price"] = p
+        d = detail.get(r["ticker"])
+        used.append(str((d.get("as_of") if isinstance(d, dict) else None) or data.get("as_of") or ""))
         eps = to_number(r.get("eps_ttm"))
         if isinstance(eps, (int, float)):
             r["earnings_yield"] = round(100.0 * eps / p, 2)
             if eps > 0:
                 r["pe"] = round(p / eps, 1)
-    return data.get("as_of")
+    used = [u for u in used if u]
+    return min(used) if used else data.get("as_of")
 
 
 def load_rules(path):

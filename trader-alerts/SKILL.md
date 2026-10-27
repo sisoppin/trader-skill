@@ -111,11 +111,11 @@ never predicts where a price is going.
 ## Safety
 
 - Education and tooling, not financial advice. An alert is a fact about a price, not a signal to trade.
-- Every order in this pack is a LIVE order with real money: Kite has no paper account.
+- Every order in this pack is a LIVE order with real money on your Zerodha account: Kite has no paper account.
 - Nothing in this pack places an order except through trader-broker, and only when all three hold:
-  trader-risk passed that exact order, the user typed an explicit yes for that one order in the chat,
-  and the user approved the Kite connector's order card because its order tool is set to "Needs
-  approval". Never set an order tool to "Always allow".
-- No F&O, no margin products other than MIS when the config allows it, and no short selling unless the
-  config allows it and the user confirms.
+  trader-risk passed that exact order in the last 10 minutes, the user typed an explicit yes for that
+  one order in the chat, and the user approved the Kite connector's order card because its order tool
+  is set to "Needs approval". Never set an order tool to "Always allow".
+- No F&O, no NRML, no stop-loss orders. MIS (intraday), MARKET orders, short selling and after-market
+  orders stay off unless the user turns them on in trader/config.json themselves.
 - Kite logins live in the connector, never in the chat or in files.

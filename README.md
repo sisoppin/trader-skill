@@ -54,8 +54,8 @@ The tools need Python 3.8 or newer. Nothing to pip install.
 ### Connect Kite
 
 Prices, holdings, positions, funds and orders come from Zerodha's Kite
-connector in Claude, logged in to your own account: in claude.ai under
-Settings, Connectors; in Claude Code with `/mcp`. Claude saves what the
+connector in Claude, logged in to your own account: connect Zerodha Kite in
+Claude's connector settings (in Claude Code, `/mcp`). Claude saves what the
 connector returns into `trader/kite/` and the tools read it from there, so
 no tool ever holds your login. Set the connector's order tools (place,
 modify, cancel) to "Needs approval", never "Always allow".

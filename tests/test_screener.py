@@ -145,6 +145,26 @@ class Cli(unittest.TestCase):
         self.assertEqual(code, 1)   # no prices, so no pe: nothing passes
         self.assertIn("pe is missing", text)
 
+    def test_a_csv_row_with_extra_cells_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "m.csv")
+            with open(p, "w") as fh:
+                fh.write("symbol,eps_ttm,operating_margin\nBBB,Rs.5,12,INR 1,23,456\n")
+            code, _, err = run([p, "--rules", RULES])
+        self.assertEqual(code, 2)
+        self.assertIn("more cells than the header", err)
+
+    def test_price_date_is_the_oldest_price_used(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "prices.json")
+            now = "2026-10-27T15:30:00+05:30"
+            with open(p, "w") as fh:
+                json.dump({"as_of": now, "prices": {"INFY": 1500, "TCS": 3500},
+                           "detail": {"INFY": {"as_of": "2026-10-01T15:30:00+05:30"},
+                                      "TCS": {"as_of": now}}}, fh)
+            code, text, _ = run([METRICS, "--rules", RULES, "--prices", p])
+        self.assertIn("Prices as of 2026-10-01T15:30:00+05:30", text)
+
     def test_bad_input_exit_2(self):
         code, _, err = run(["/nonexistent.json", "--rules", RULES])
         self.assertEqual(code, 2)

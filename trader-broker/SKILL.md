@@ -33,8 +33,8 @@ python3 "${CLAUDE_SKILL_DIR}/ticket.py" log
 
 ## Setup: the Kite connector
 
-1. In Claude, open Customize > Connectors and connect Zerodha Kite. Log in
-   to Zerodha in the window it opens. The login stays in the connector.
+1. Connect Zerodha Kite in Claude's connector settings (in Claude Code,
+   `/mcp`). Log in to Zerodha in the window it opens. The login stays in the connector.
 2. In the connector's tool permissions, set the order tools (place, modify,
    cancel) to "Needs approval". Read tools such as quotes, holdings and
    positions can stay allowed.

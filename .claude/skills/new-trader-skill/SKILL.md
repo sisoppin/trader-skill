@@ -36,7 +36,7 @@ Read two existing skills first as the template. Pick one close to the new one, f
 - `.claude-plugin/plugin.json`: `description` must equal the new `ABOUT` exactly.
 - `README.md`: update the first paragraph (the `ABOUT` text) and the "## The eleven" heading, and add a `/<name>` row to the command table.
 - Check `.claude-plugin/marketplace.json` for a matching description.
-- Run `grep -rn "11 Claude skills\|eleven" .` to find leftovers.
+- Run `grep -rni "11 Claude skills\|eleven" .` to find leftovers.
 
 ## 5. Verify
 
