@@ -280,7 +280,7 @@ def main(argv=None):
         lines.append("blocked: " + b)
     lines.append("Someone else's portfolio, disclosed after the fact. Not financial advice.")
     if a.json:
-        print(json.dumps(dict(doc, rows=rows, errors=errors, blocked=blocked, written=written,
+        print(json.dumps(dict(doc, rows=rows, errors=errors, blocked=blocked, written_to=written,
                                     not_written=not_written), indent=2, default=str))
     else:
         print("\n".join(lines))

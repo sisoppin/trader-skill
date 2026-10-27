@@ -162,7 +162,8 @@ class Investor(unittest.TestCase):
         code, text, _ = self.cc("--symbols", "TITAN", "CRISIL", "NCC", "--write", self.out, "--json")
         doc = json.loads(text)
         self.assertEqual(code, 2)
-        self.assertIsNone(doc["written"])
+        self.assertIsNone(doc["written_to"])
+        self.assertEqual(doc["written"], "2026-10-27T10:00:00+05:30")
         self.assertIn("no price for NCC", doc["not_written"])
 
     def test_partial_read_refuses_to_write(self):
@@ -206,7 +207,8 @@ class Fund(unittest.TestCase):
     def test_json_written_path(self):
         code, text, _ = self.cc("--top", "4", "--json")
         doc = json.loads(text)
-        self.assertEqual((code, doc["written"], doc["not_written"]), (0, self.out, None))
+        self.assertEqual((code, doc["written_to"], doc["not_written"]), (0, self.out, None))
+        self.assertEqual(doc["written"], "2026-11-05T10:00:00+05:30")
 
     def test_unlisted_stock_among_all_holdings_is_ranked_with_the_mapped_ones(self):
         sheet = os.path.join(self.tmp.name, "five.csv")
