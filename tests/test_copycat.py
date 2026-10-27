@@ -96,6 +96,19 @@ class FundSheet(unittest.TestCase):
         self.assertEqual([r["pct"] for r in rows], [6.0, 4.0])
         self.assertEqual(amc.change(rows[0], dict(rows[0], pct=5.0)), "added")
 
+    def test_two_stacked_schemes_are_refused(self):
+        head = "Name,ISIN,Quantity,% to NAV\n"
+        text = head + "Infosys,INE009A01021,100,5%\n\nSecond Scheme\n" + head + "TCS,INE467B01029,100,5%\n"
+        with self.assertRaises(amc.AmcError) as cm:
+            amc.parse(text)
+        self.assertIn("more than one portfolio", str(cm.exception))
+
+    def test_equity_rows_over_100_percent_are_refused(self):
+        text = "Name,ISIN,Quantity,% to NAV\nInfosys,INE009A01021,100,60%\nTCS,INE467B01029,100,60%\n"
+        with self.assertRaises(amc.AmcError) as cm:
+            amc.parse(text)
+        self.assertIn("more than 100%", str(cm.exception))
+
     def test_not_a_portfolio_sheet(self):
         with self.assertRaises(amc.AmcError) as cm:
             amc.parse("Date,Symbol,Price\n2026-10-01,INFY,1500\n")
@@ -132,6 +145,40 @@ class Investor(unittest.TestCase):
                          [("TITAN", 79.22), ("NCC", 11.22), ("CRISIL", 9.57)])
         self.assertIn("partial portfolio", doc["method"])
         self.assertEqual([r["ticker"] for r in size.parse_weights(doc)], ["TITAN", "NCC", "CRISIL"])
+
+    def test_filed_names_are_shown_and_kept(self):
+        code, text, _ = self.cc("--symbols", "TITAN", "CRISIL", "NCC", "--write", self.out)
+        self.assertEqual(code, 0)
+        self.assertIn("             filed as: REKHA JHUNJHUNWALA\n", text)
+        with open(self.out) as fh:
+            doc = json.load(fh)
+        self.assertEqual([w["filed_names"] for w in doc["weights"]], [["REKHA JHUNJHUNWALA"]] * 3)
+
+    def other(self, name, *args):
+        return run(["investor", name, "--symbols", "TITAN", "CRISIL", "NCC", "--offline", CDIR,
+                    "--prices", self.prices, "--now", NOW] + list(args))
+
+    def test_one_word_name_refuses_and_writes_nothing(self):
+        for extra in ([], ["--write", self.out]):
+            code, text, _ = self.other("Jhunjhunwala", *extra)
+            self.assertEqual(code, 2)
+            self.assertIn("check the names: a one-word name matches everyone who shares it", text)
+        self.assertIn("not written: the name matched more than one person", text)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_name_matching_two_people_refuses_unless_all_matches(self):
+        code, text, _ = self.other("Life Insurance")
+        self.assertEqual(code, 2)
+        code, text, _ = self.other("Life Insurance", "--write", self.out)
+        self.assertEqual(code, 2)
+        self.assertIn('check the names: "Life Insurance" matched 2 different filed names: ', text)
+        self.assertIn("not written: the name matched more than one person (rerun with the full filed name, "
+                      "or --all-matches if you mean all of them)", text)
+        self.assertFalse(os.path.exists(self.out))
+        code, text, _ = self.other("Life Insurance", "--write", self.out, "--all-matches")
+        self.assertEqual(code, 0)
+        self.assertNotIn("check the names", text)
+        self.assertTrue(os.path.exists(self.out))
 
     def test_someone_not_named(self):
         code, text, _ = run(["investor", "Radhakishan Damani", "--symbols", "TITAN", "--offline", CDIR,
@@ -198,6 +245,12 @@ class Fund(unittest.TestCase):
                          [("HDFCBANK", 42.74), ("INFY", 26.32), ("RELIANCE", 17.84), ("M&M", 13.11)])
         self.assertAlmostEqual(sum(r["weight"] for r in size.parse_weights(doc)), 100, delta=0.05)
 
+    def test_unlisted_stock_inside_the_top_exits_2_even_as_a_preview(self):
+        code, text, _ = run(["fund", "Example Flexi Cap", "--file", OCT, "--previous", SEP, "--symbols-file", SYMS,
+                             "--now", NOW, "--top", "5"])
+        self.assertEqual(code, 2)
+        self.assertIn("would be copied but not on the NSE symbol list", text)
+
     def test_unlisted_stock_inside_the_top_refuses_to_write(self):
         code, text, _ = self.cc("--top", "5")
         self.assertEqual(code, 2)
@@ -237,10 +290,11 @@ class Network(unittest.TestCase):
         master = json.loads(read("shp-TITAN.json"))
 
         class Client:
-            urls, forgot = [], []
+            urls, forgot, caches = [], [], []
 
             def get_json(self, url, cache=True):
                 self.urls.append(url)
+                self.caches.append(cache)
                 return master
 
             def get_text(self, url, cookie=True, cache=True):
@@ -252,6 +306,7 @@ class Network(unittest.TestCase):
         rows, absent, errors, blocked = cc.investor("Rekha Jhunjhunwala", ["M&M"], c)
         self.assertTrue(c.urls[0].endswith("symbol=M%26M"))
         self.assertEqual((rows, len(errors), len(c.forgot)), ([], 1, 1))
+        self.assertEqual(c.caches, [False])
 
     def test_blocked_names_the_offline_fallback(self):
         class Client:

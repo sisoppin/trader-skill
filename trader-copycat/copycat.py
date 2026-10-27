@@ -93,7 +93,7 @@ def investor(name, symbols, client=None, offline=None):
             if offline:
                 master = nse.read_json_file(os.path.join(offline, "shp-%s.json" % sym))
             else:
-                master = client.get_json(shp.MASTER_URL % urllib.parse.quote(sym, safe=""))
+                master = client.get_json(shp.MASTER_URL % urllib.parse.quote(sym, safe=""), cache=False)
             quarters = shp.parse_master(master, sym)[:2]
             if not quarters:
                 raise shp.ShpError("NSE lists no shareholding patterns")
@@ -165,6 +165,8 @@ def main(argv=None):
     p.add_argument("--symbols", nargs="+", required=True, help="the stocks to look in")
     p.add_argument("--offline", metavar="DIR", help="read shp-<SYMBOL>.json and the XBRL files from DIR")
     p.add_argument("--prices", default="trader/prices.json")
+    p.add_argument("--all-matches", action="store_true",
+                   help="accept the sum when the name matches more than one filed name")
     f = sub.add_parser("fund", help="a mutual fund's monthly portfolio sheet saved as CSV")
     f.add_argument("name", help='the scheme, e.g. "Parag Parikh Flexi Cap"')
     f.add_argument("--file", required=True, help="this month's portfolio sheet as CSV")
@@ -199,6 +201,17 @@ def main(argv=None):
                 r["value"] = round(r["shares"] * prices[r["symbol"]], 2) if r["symbol"] in prices else None
             chosen = scale(rows, "value", a.top) if not missing else []
             quarters = sorted({r["quarter"] for r in rows if r["shares"]})
+            ambiguous = None
+            if rows:
+                canon = {}
+                for r in rows:
+                    for n in r["names"]:
+                        canon.setdefault(" ".join(sorted(shp.words(n))), n)
+                if len(shp.words(a.name)) < 2:
+                    ambiguous = "a one-word name matches everyone who shares it"
+                elif len(canon) > 1:
+                    ambiguous = '"%s" matched %d different filed names: %s' % (a.name, len(canon),
+                                                                              "; ".join(canon.values()))
             lines.append("%s in NSE shareholding patterns (stakes above 1%% only), quarter ended %s" % (
                 a.name, ", ".join(quarters) or "-"))
             for r in sorted(rows, key=lambda r: (-(r["value"] or 0), -r["shares"], r["symbol"])):
@@ -207,6 +220,11 @@ def main(argv=None):
                     r["symbol"], inr(r["shares"])[3:], r["pct"], r["change"],
                     inr(r["value"]) if r["value"] is not None else "no price",
                     ("  weight %.2f" % w) if w is not None else ""))
+                lines.append("             filed as: %s" % "; ".join(dict.fromkeys(r["names"])))
+            if ambiguous and not a.all_matches:
+                lines.append("check the names: " + ambiguous)
+            else:
+                ambiguous = None
             for s in absent:
                 lines.append("  %-10s not named (holds under 1%%, or none)" % s)
             if absent and not rows and not errors and not blocked:
@@ -223,7 +241,7 @@ def main(argv=None):
                                                                                            a.top or "all"),
                    "weights": [{"symbol": r["symbol"], "name": r["company"], "weight": r["weight"],
                                 "shares": r["shares"], "pct_of_company": r["pct"], "value": r["value"],
-                                "change": r["change"]} for r in chosen]}
+                                "change": r["change"], "filed_names": r["names"]} for r in chosen]}
         else:
             master = nse_symbols.load(a.symbols_file)
             rows, unmapped = fund(a.file, a.previous, master)
@@ -252,6 +270,9 @@ def main(argv=None):
             why = None
             if errors or blocked:
                 why = "%d stock(s) could not be read, so the weights would be wrong" % (len(errors) + len(blocked))
+            elif a.cmd == "investor" and ambiguous:
+                why = ("the name matched more than one person (rerun with the full filed name, or --all-matches "
+                       "if you mean all of them)")
             elif a.cmd == "investor" and missing:
                 why = "no price for %s" % ", ".join(missing)
             elif a.cmd == "fund" and crowded:
@@ -284,7 +305,8 @@ def main(argv=None):
                                     not_written=not_written), indent=2, default=str))
     else:
         print("\n".join(lines))
-    return 2 if (errors or blocked or refused or (a.cmd == "investor" and missing)) else 0
+    return 2 if (errors or blocked or refused or (a.cmd == "investor" and (missing or ambiguous)) or
+                (a.cmd == "fund" and crowded)) else 0
 
 
 if __name__ == "__main__":

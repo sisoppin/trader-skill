@@ -45,13 +45,20 @@ There is no list of everything one person owns. The user names the stocks
 to look in (`--symbols`). For each one the tool reads NSE's two newest
 shareholding patterns,
 `https://www.nseindia.com/api/corporate-share-holdings-master?index=equities&symbol=<SYMBOL>`
-and the XBRL file each links to, and adds up every entry carrying the
+and the XBRL file each links to (each run asks NSE for the list again, so a
+filing made today shows up; the XBRL files, which never change, are kept in
+the tool's daily cache in `trader/cache/nse/`), and adds up every entry carrying the
 investor's name (one person often holds through two accounts). Entries that
 only repeat a holding (persons acting in concert) are not counted twice.
 
 - The name matches when every word of it appears in the filed name, so
   "Rekha Jhunjhunwala" matches "REKHA JHUNJHUNWALA" but not "Rajesh
   Jhunjhunwala". Use the name as filed.
+- Each result line is followed by `filed as: <name>`, the names the tool
+  added up. A one-word name, or a name matching more than one distinct filed
+  name (a short name can match a relative or a company), makes the tool exit
+  2 and write nothing. Rerun with the full filed name, or pass
+  `--all-matches` when you mean the sum of all of them.
 - "not named" means the investor holds under 1% of that company, or none.
   "gone" means named last quarter but not now: sold, or fell under 1%.
 - Weights are holding value (shares x price) scaled to 100. Save Kite
@@ -76,7 +83,7 @@ top N holdings (`--top`, default 10; 0 for all) scaled to 100. `--previous`
 with last month's sheet shows new, added, trimmed and sold.
 
 A stock whose ISIN is not on the NSE list is shown and left out. If it
-would have been in the top N, nothing is written: refresh the symbol list
+would have been in the top N, the run exits 2 (even without `--write`) and nothing is written: refresh the symbol list
 (`nse_symbols.py refresh`) or pick a smaller `--top`.
 
 ## Steps
@@ -84,9 +91,10 @@ would have been in the top N, nothing is written: refresh the symbol list
 1. Ask who to copy: an investor (and which stocks) or a fund (and its
    sheet as CSV).
 2. Run `copycat.py` without `--write` and show the holdings, the changes
-   and the weights. Exit 0 means everything was read; 2 means something
-   could not be read or priced: read the error, blocked or "not written"
-   lines.
+   and the weights. Show the user the `filed as` names and confirm they are
+   the right person before `--write`. Exit 0 means everything was read; 2
+   means something could not be read or priced: read the error, blocked or
+   "not written" lines.
 3. When the user is happy, rerun with `--write`. It refuses to save weights
    built from a partial read.
 4. Hand over to `/trader-budget` to size the weights to their money. Every

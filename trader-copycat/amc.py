@@ -66,6 +66,11 @@ def parse(text):
     if header_at is None:
         raise AmcError("no header row with an ISIN column and a % to NAV column (is this the AMC's portfolio sheet "
                        "saved as CSV?)")
+    for i, r in enumerate(rows[header_at + 1:], start=header_at + 1):
+        h = [_norm(c) for c in r]
+        if _col(h, ("isin", "isin code", "isin no.")) is not None and _col(h, PCT) is not None:
+            raise AmcError("the sheet holds more than one portfolio (a second header row at row %d): save only the "
+                           "scheme's own sheet as CSV" % (i + 1))
     cell = lambda r, k: r[cols[k]] if cols[k] is not None and cols[k] < len(r) else ""
     out = []
     for r in rows[header_at + 1:]:
@@ -89,6 +94,10 @@ def parse(text):
             m["pct"] += x["pct"]
             for k in ("quantity", "value"):
                 m[k] = None if m[k] is None or x[k] is None else m[k] + x[k]
+    total = sum(x["pct"] for x in merged.values())
+    if total > 100.5:
+        raise AmcError("the equity rows add up to %.1f%% of NAV, more than 100%%: is this more than one scheme?"
+                       % total)
     return list(merged.values())
 
 
