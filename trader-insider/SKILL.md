@@ -34,7 +34,7 @@ python3 "${CLAUDE_SKILL_DIR}/insider.py" deals --every-symbol
 | --- | --- |
 | `trader/kite/holdings.json`, `trader/targets.json` | the stocks to watch |
 | `trader/state/insider.json` | what you have seen (90 days), so each filing alerts once |
-| `trader/insider.json` | the latest rows, for the other skills |
+| `trader/insider.json` | the latest rows; `cmd` says which sources were read, and `complete` is false when a stock or source could not be read |
 
 ## Where the data comes from
 
@@ -45,6 +45,7 @@ python3 "${CLAUDE_SKILL_DIR}/insider.py" deals --every-symbol
 - Bulk deals: `https://archives.nseindia.com/content/equities/bulk.csv` and
   block deals: `.../block.csv`, today only, no cookie needed. `--bulk-file`
   and `--block-file` take saved copies.
+- Every run asks NSE again (no cache), so a schedule sees new filings the same day.
 
 ## How to read it
 

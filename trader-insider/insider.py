@@ -20,6 +20,8 @@ off-market transfers are shown but untagged. Bulk deals are trades of 0.5%
 or more of a company's shares on one day; block deals are big trades done in
 the block window.
 
+Every run asks NSE again (no daily cache), so a schedule sees new filings.
+
 State: trader/state/insider.json remembers what you have seen, so each
 filing alerts once. trader/insider.json holds the latest rows for the
 other skills. Exit code 0 when something new is shown and nothing failed, 1
@@ -39,6 +41,7 @@ import io
 import json
 import os
 import sys
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -178,7 +181,7 @@ def fetch_pit(symbols, client=None, file=None, offline=None):
             elif offline:
                 doc = nse.read_json_file(os.path.join(offline, "pit-%s.json" % sym))
             else:
-                doc = client.get_json(PIT_URL % sym)
+                doc = client.get_json(PIT_URL % urllib.parse.quote(sym, safe=""), cache=False)
             rows += parse_pit(doc, sym)
         except nse.NseBlocked as e:
             blocked.append(str(e))
@@ -196,10 +199,10 @@ def fetch_deals(client=None, bulk_file=None, block_file=None, offline=None):
             elif offline:
                 text = nse.read_file(os.path.join(offline, name))
             else:
-                text = client.get_text(url, cookie=False)
+                text = client.get_text(url, cookie=False, cache=False)
             rows += parse_deals(text, kind)
         except nse.NseBlocked as e:
-            blocked.append(str(e))
+            blocked.append("%s (for %s deals use --%s-file, not --file)" % (e, kind, kind))
         except (InsiderError, nse.NseError) as e:
             errors.append("%s deals: %s" % (kind, e))
     return rows, errors, blocked
@@ -282,9 +285,14 @@ def main(argv=None):
             for x in rows:
                 state["seen"].setdefault(x["id"], now.isoformat())
             save_state(a.state, state, now)
-            _write(a.out, {"as_of": now.isoformat(), "rows": [dict(x, when=x["when"].isoformat()) for x in rows]})
+            _write(a.out, {"as_of": now.isoformat(), "cmd": a.cmd, "complete": not (errors or blocked),
+                           "errors": errors, "blocked": blocked,
+                           "rows": [dict(x, when=x["when"].isoformat()) for x in rows]})
     except (InsiderError, nse.NseError, nse_calendar.CalendarError, nse_symbols.SymbolError, watchlist.WatchError) as e:
         print("insider.py: %s" % e, file=sys.stderr)
+        return 2
+    except Exception as e:  # never let a scheduled run exit 1 ("nothing new") on a crash
+        print("insider.py: unexpected %s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 2
     if a.json:
         print(json.dumps({"rows": [dict(x, when=x["when"].isoformat()) for x in shown], "errors": errors,

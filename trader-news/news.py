@@ -16,6 +16,8 @@ If NSE blocks the request, the tool prints that address: open it in a
 browser, save what it shows, and run again with --file (one symbol) or
 --offline DIR holding announcements-<SYMBOL>.json files.
 
+Every run asks NSE again (no daily cache), so a schedule sees new filings.
+
 State: trader/state/news.json remembers what you have seen (90 days), so an
 item shows once. Exit code 0 when something new is shown, 1 when nothing is new
 and every symbol was checked, 2 when anything could not be checked (an error, or
@@ -29,7 +31,9 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
+import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -43,16 +47,20 @@ import watchlist
 
 URL = "https://www.nseindia.com/api/corporate-announcements?index=equities&symbol=%s"
 KEEP_DAYS = 90
+WEAK = "board meeting*"
 CATEGORIES = (
-    ("results", ("financial result", "quarterly result", "audited", "unaudited", "results")),
+    ("other", ("trading window",)),
+    ("board meeting", ("board meeting intimation", "intimation of board meeting", "prior intimation")),
+    ("pledge", ("pledge", "encumbrance", "regulation 31", "reg. 31")),
+    ("insider", ("insider", "sast", "takeover", "regulation 29", "reg. 29", "regulation 7", "reg. 7")),
+    ("results", ("financial result", "quarterly result", "audited", "unaudited", "result")),
     ("dividend", ("dividend", "bonus", "split", "buyback", "buy back", "record date")),
-    ("board meeting", ("board meeting",)),
-    ("deal", ("acquisition", "amalgamation", "merger", "scheme of arrangement", "demerger", "takeover")),
-    ("pledge", ("pledge", "encumbrance")),
-    ("insider", ("insider", "sast", "regulation 29", "reg. 29", "regulation 7")),
+    ("deal", ("acquisition", "amalgamation", "merger", "scheme of arrangement", "demerger")),
     ("rating", ("credit rating", "rating")),
-    ("management", ("appointment", "resignation", "cessation", "director", "chief executive", "ceo", "cfo")),
+    ("management", ("appointment", "resignation", "cessation", "change in directorate", "chief executive",
+                    "ceo", "cfo", "key managerial")),
     ("analyst meet", ("analyst", "investor meet", "con. call", "earnings call")),
+    (WEAK, ("board meeting",)),
 )
 
 
@@ -60,13 +68,21 @@ class NewsError(Exception):
     pass
 
 
-def category(desc, text=""):
-    """The first matching category over the title and the attachment text (results before dividend etc.)."""
-    low = ("%s %s" % (desc or "", text or "")).lower()
+def _match(s):
+    low = " ".join(str(s or "").lower().split())
     for name, words in CATEGORIES:
-        if any(w in low for w in words):
+        if any(re.search(r"(?<![a-z])" + re.escape(w) + r"s?(?![a-z])", low) for w in words):
             return name
-    return "other"
+    return None
+
+
+def category(desc, text=""):
+    """The title decides; a title that says nothing ("Copy of ...", "Outcome of Board Meeting") falls back to the
+    attachment text. Words match whole (so "operating" is not a rating), plural or not."""
+    c = _match(desc)
+    if c in (None, WEAK):
+        c = _match(text) or c
+    return "board meeting" if c == WEAK else (c or "other")
 
 
 def parse(data, symbol):
@@ -125,7 +141,7 @@ def collect(symbols, client=None, offline=None, file=None):
                     raise NewsError("no saved announcements for %s at %s" % (sym, path))
                 data = nse.read_json_file(path)
             else:
-                data = client.get_json(URL % sym)
+                data = client.get_json(URL % urllib.parse.quote(sym, safe=""), cache=False)
             items += parse(data, sym)
         except nse.NseBlocked as e:
             blocked.append(str(e))
@@ -194,11 +210,14 @@ def main(argv=None):
         state = load_state(a.state)
         shown = select(items, state, now, a.days, a.all)
         if not a.dry_run:
-            for i in items:
+            for i in select(items, state, now, a.days, True):
                 state["seen"].setdefault(i["id"], now.isoformat())
             save_state(a.state, state, now)
     except (NewsError, nse.NseError, nse_calendar.CalendarError, nse_symbols.SymbolError, watchlist.WatchError) as e:
         print("news.py: %s" % e, file=sys.stderr)
+        return 2
+    except Exception as e:  # never let a scheduled run exit 1 ("nothing new") on a crash
+        print("news.py: unexpected %s: %s" % (type(e).__name__, e), file=sys.stderr)
         return 2
     if a.json:
         print(json.dumps({"items": [dict(i, when=i["when"].isoformat()) for i in shown], "errors": errors,

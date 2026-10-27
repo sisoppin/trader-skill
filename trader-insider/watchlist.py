@@ -28,15 +28,19 @@ def watch_list(kite_dir, targets):
     try:
         for r in kite_snapshot.load("holdings", kite_dir, max_age=10 ** 9) or []:
             syms.append(str(r.get("tradingsymbol", "")).upper())
-    except kite_snapshot.SnapshotError:
-        pass
+    except kite_snapshot.SnapshotError as e:
+        held = kite_snapshot.path("holdings", kite_dir)
+        if os.path.exists(held):
+            raise WatchError("%s: %s" % (held, e))
     if targets and os.path.exists(targets):
         try:
             with open(targets, encoding="utf-8") as fh:
                 doc = json.load(fh)
         except ValueError as e:
             raise WatchError("%s is not valid JSON: %s" % (targets, e))
-        for w in doc.get("weights", []) if isinstance(doc, dict) else []:
+        for w in (doc.get("weights") or []) if isinstance(doc, dict) else []:
+            if not isinstance(w, dict):
+                continue
             syms.append(str(w.get("symbol") or w.get("ticker") or "").upper())
     out = []
     for s in syms:

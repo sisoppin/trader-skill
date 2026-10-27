@@ -40,10 +40,21 @@ class Parse(unittest.TestCase):
 
     def test_categories(self):
         self.assertEqual(news.category("Outcome of Board Meeting", "Financial Results for the quarter"), "results")
-        self.assertEqual(news.category("Board Meeting Intimation", "to consider buyback"), "dividend")
+        self.assertEqual(news.category("Board Meeting Intimation", "to consider buyback"), "board meeting")
         self.assertEqual(news.category("Board Meeting Intimation", "to consider fund raising"), "board meeting")
         self.assertEqual(news.category("Disclosure of creation of pledge", ""), "pledge")
         self.assertEqual(news.category("Copy of Newspaper Publication", ""), "other")
+
+    def test_categories_do_not_mislabel_common_subjects(self):
+        c = news.category
+        self.assertEqual(c("Board Meeting Intimation", "to consider and approve the Financial Results"),
+                         "board meeting")
+        self.assertEqual(c("Disclosure under SEBI Takeover Regulations", ""), "insider")
+        self.assertEqual(c("Disclosure under Regulation 31 of SEBI SAST", "encumbrance of promoter shares"), "pledge")
+        self.assertEqual(c("Closure of Trading Window", "after declaration of financial results"), "other")
+        self.assertEqual(c("Press Release", "operating margin improved"), "other")
+        self.assertEqual(c("Updates", "Board of Directors approved the plan"), "other")
+        self.assertEqual(c("Credit Rating", ""), "rating")
 
     def test_not_a_list_is_an_error(self):
         with self.assertRaises(news.NewsError):
@@ -95,6 +106,21 @@ class Run(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("error: TCS: no saved announcements", text)
 
+    def test_a_short_window_does_not_hide_older_items_from_a_longer_one(self):
+        code, _, _ = self.news("--days", "2")
+        self.assertEqual(code, 0)
+        code, text, _ = self.news("--days", "30")
+        self.assertEqual(code, 0)
+        self.assertIn("2026-10-23", text)
+        self.assertIn("Outcome of Board Meeting", text)
+
+    def test_a_crash_in_the_state_file_exits_2(self):
+        with open(self.state, "w") as fh:
+            fh.write("[]")
+        code, _, err = self.news()
+        self.assertEqual(code, 2)
+        self.assertIn("unexpected", err)
+
     def test_seen_ids_older_than_90_days_are_forgotten(self):
         with open(self.state, "w") as fh:
             json.dump({"seen": {"old": "2026-01-01T10:00:00+05:30", "new": "2026-10-20T10:00:00+05:30"}}, fh)
@@ -110,12 +136,27 @@ class Run(unittest.TestCase):
 class Blocked(unittest.TestCase):
     def test_a_blocked_symbol_exits_2_with_the_file_hint(self):
         class Client:
-            def get_json(self, url):
+            def get_json(self, url, cache=True):
                 raise news.nse.NseBlocked(url, "HTTP 403")
         items, errors, blocked = news.collect(["INFY"], Client())
         self.assertEqual((items, errors), ([], []))
         self.assertIn("--file", blocked[0])
         self.assertIn("symbol=INFY", blocked[0])
+
+
+class Requests(unittest.TestCase):
+    def test_collect_asks_fresh_and_encodes_the_symbol(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def get_json(self, url, cache=True):
+                self.calls.append((url, cache))
+                return []
+        c = Client()
+        news.collect(["INFY", "M&M"], c)
+        self.assertEqual([x[1] for x in c.calls], [False, False])
+        self.assertTrue(c.calls[1][0].endswith("symbol=M%26M"))
 
 
 class Exit(unittest.TestCase):
@@ -133,7 +174,7 @@ class Exit(unittest.TestCase):
             def __init__(self, *a, **k):
                 pass
 
-            def get_json(self, url):
+            def get_json(self, url, cache=True):
                 raise news.nse.NseBlocked(url, "HTTP 403")
         news.nse.Client = Client
         code, text, _ = run(["--symbols", "INFY", "--state", self.state, "--now", NOW])
@@ -143,6 +184,25 @@ class Exit(unittest.TestCase):
 
 
 class Watch(unittest.TestCase):
+    def test_a_corrupt_holdings_file_is_an_error_and_null_weights_are_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            kd = os.path.join(d, "kite")
+            os.makedirs(kd)
+            with open(os.path.join(kd, "holdings.json"), "w") as fh:
+                fh.write("{garbage")
+            with self.assertRaises(news.watchlist.WatchError):
+                news.watchlist.watch_list(kd, None)
+            code, _, err = run(["--kite-dir", kd, "--targets", os.path.join(d, "none.json"), "--now", NOW])
+            self.assertEqual(code, 2)
+            self.assertIn("holdings.json", err)
+            targets = os.path.join(d, "targets.json")
+            with open(targets, "w") as fh:
+                json.dump({"weights": None}, fh)
+            self.assertEqual(news.watchlist.watch_list(os.path.join(d, "none"), targets), [])
+            with open(targets, "w") as fh:
+                json.dump({"weights": ["x", {"symbol": "TCS"}]}, fh)
+            self.assertEqual(news.watchlist.watch_list(os.path.join(d, "none"), targets), ["TCS"])
+
     def test_holdings_and_targets(self):
         with tempfile.TemporaryDirectory() as d:
             kd = os.path.join(d, "kite")

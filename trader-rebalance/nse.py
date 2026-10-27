@@ -7,7 +7,8 @@ browser User-Agent, and it still blocks often. So every caller also takes
 browser, save what it shows, and run again with --file <saved file>.
 
 Answers are cached per day in trader/cache/nse/<date>/ so a rerun does not
-ask NSE again, and requests are at least PAUSE seconds apart.
+ask NSE again (pass cache=False to ask every time), and requests are at
+least PAUSE seconds apart.
 
 This file is copied into every skill that reads NSE. Keep the copies
 identical: tests/test_repo.py checks.
@@ -15,6 +16,7 @@ identical: tests/test_repo.py checks.
 
 import datetime
 import hashlib
+import http.client
 import http.cookiejar
 import json
 import os
@@ -84,6 +86,8 @@ class Client:
             raise NseError("%s answered HTTP %d" % (url, e.code))
         except urllib.error.URLError as e:
             raise NseError("could not reach %s: %s" % (url.split("/")[2], e.reason))
+        except (OSError, http.client.HTTPException) as e:
+            raise NseError("could not reach %s: %s" % (url.split("/")[2], e))
 
     def _cache_path(self, url):
         name = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16] + ".txt"
@@ -95,9 +99,9 @@ class Client:
         if os.path.exists(p):
             os.remove(p)
 
-    def get_text(self, url, cookie=True):
+    def get_text(self, url, cookie=True, cache=True):
         p = self._cache_path(url)
-        if os.path.exists(p):
+        if cache and os.path.exists(p):
             return read_file(p)
         if cookie and not self._warm:
             self._warm = True
@@ -106,13 +110,15 @@ class Client:
             except NseError:
                 pass
         text = self._open(url, "application/json,text/csv,*/*")
+        if not cache:
+            return text
         os.makedirs(os.path.dirname(p), exist_ok=True)
         with open(p, "w", encoding="utf-8") as fh:
             fh.write(text)
         return text
 
-    def get_json(self, url):
-        text = self.get_text(url)
+    def get_json(self, url, cache=True):
+        text = self.get_text(url, cache=cache)
         try:
             return json.loads(text)
         except ValueError:

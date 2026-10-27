@@ -87,7 +87,9 @@ class Cli(unittest.TestCase):
         self.assertIn("error: APOLLO: cannot read", text)
         self.assertIn("Not financial advice", text)
         with open(self.out) as fh:
-            self.assertEqual(len(json.load(fh)["rows"]), 4)
+            doc = json.load(fh)
+        self.assertEqual(len(doc["rows"]), 4)
+        self.assertEqual((doc["complete"], doc["cmd"], len(doc["errors"])), (False, "check", 1))
         code, text, _ = self.ins("--symbols", "ABC", "APOLLO", "--days", "30")
         self.assertEqual(code, 2)
         self.assertIn("Nothing new.", text)
@@ -121,26 +123,58 @@ class Cli(unittest.TestCase):
         self.assertIn("--file holds one symbol", err)
 
 
+class Requests(unittest.TestCase):
+    def test_fetches_ask_fresh_and_encode_the_symbol(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def get_json(self, url, cache=True):
+                self.calls.append((url, cache))
+                return {"data": []}
+
+            def get_text(self, url, cookie=True, cache=True):
+                self.calls.append((url, cache))
+                return "Date,Symbol,Client Name\n"
+        c = Client()
+        ins.fetch_pit(["M&M"], c)
+        ins.fetch_deals(c)
+        self.assertTrue(c.calls[0][0].endswith("symbol=M%26M"))
+        self.assertEqual([x[1] for x in c.calls], [False, False, False])
+
+    def test_a_crash_exits_2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = os.path.join(tmp, "s.json")
+            with open(state, "w") as fh:
+                fh.write("[]")
+            code, _, err = run(["--symbols", "ABC", "--offline", IDIR, "--state", state,
+                                "--out", os.path.join(tmp, "o.json"), "--now", NOW])
+        self.assertEqual(code, 2)
+        self.assertIn("unexpected", err)
+
+
 class Blocked(unittest.TestCase):
     def test_blocked_requests_are_reported(self):
         class Client:
-            def get_json(self, url):
+            def get_json(self, url, cache=True):
                 raise ins.nse.NseBlocked(url, "HTTP 403")
 
-            def get_text(self, url, cookie=True):
+            def get_text(self, url, cookie=True, cache=True):
                 raise ins.nse.NseBlocked(url, "HTTP 503")
         _, _, blocked = ins.fetch_pit(["INFY"], Client())
         self.assertIn("symbol=INFY", blocked[0])
         _, _, blocked = ins.fetch_deals(Client())
         self.assertEqual(len(blocked), 2)
         self.assertIn("--file", blocked[0])
+        self.assertIn("--bulk-file", blocked[0])
+        self.assertIn("--block-file", blocked[1])
 
     def test_blocked_exits_2_in_main(self):
         class Client:
-            def get_json(self, url):
+            def get_json(self, url, cache=True):
                 raise ins.nse.NseBlocked(url, "HTTP 403")
 
-            def get_text(self, url, cookie=True):
+            def get_text(self, url, cookie=True, cache=True):
                 raise ins.nse.NseBlocked(url, "HTTP 503")
         old = ins.nse.Client
         ins.nse.Client = Client

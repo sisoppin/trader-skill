@@ -42,15 +42,18 @@ One request per stock to NSE's corporate announcements page:
 NSE often blocks scripts. When it does, the tool prints that address and
 exits 2. Ask the user to open it in a browser, save what it shows, and run
 again with `--file <saved file>` (one stock) or `--offline <folder>` holding
-`announcements-<SYMBOL>.json` files.
+`announcements-<SYMBOL>.json` files. Every run asks NSE again (no cache),
+so a schedule sees new filings the same day.
 
 ## Categories
 
 results, dividend (also bonus, split, buyback, record date), board meeting,
-deal (acquisition, merger, scheme), pledge, insider (insider and takeover
-filings), rating, management, analyst meet, and other. The category comes
-from the title and the attachment text, so "Outcome of Board Meeting" with
-financial results counts as results.
+deal (acquisition, merger, scheme), pledge, insider, rating, management,
+analyst meet, and other. The title decides; the attachment text is used only
+when the title says nothing ("Outcome of Board Meeting" with financial
+results counts as results). Board meeting intimations are board meeting, not
+results. Takeover (SAST) disclosures are insider. Encumbrance and
+Regulation 31 disclosures are pledge. Trading-window notices are other.
 
 ## Steps
 

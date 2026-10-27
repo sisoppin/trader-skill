@@ -108,5 +108,41 @@ class Files(unittest.TestCase):
             self.assertIn("cannot read", str(e.exception))
 
 
+class Fresh(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_cache_false_neither_reads_nor_writes_the_cache(self):
+        class Changing:
+            def __init__(self):
+                self.n = 0
+
+            def open(self, req, timeout=None):
+                self.n += 1
+                return io.BytesIO(("answer %d" % self.n).encode("utf-8"))
+        c = nse.Client(cache=self.tmp.name, opener=Changing(), pause=0, today="2026-10-26")
+        self.assertEqual(c.get_text(API, cookie=False, cache=False), "answer 1")
+        self.assertEqual(c.get_text(API, cookie=False, cache=False), "answer 2")
+        self.assertEqual(os.listdir(self.tmp.name), [])
+        self.assertEqual(c.get_text(API, cookie=False), "answer 3")
+        self.assertEqual(c.get_text(API, cookie=False), "answer 3")
+        self.assertEqual(c.get_text(API, cookie=False, cache=False), "answer 4")
+
+    def test_get_json_passes_cache_and_a_non_json_answer_is_blocked(self):
+        c = nse.Client(cache=self.tmp.name, opener=FakeOpener({API: "<html>"}), pause=0, today="2026-10-26")
+        with self.assertRaises(nse.NseBlocked):
+            c.get_json(API, cache=False)
+
+    def test_a_timeout_is_an_nse_error(self):
+        c = nse.Client(cache=self.tmp.name, opener=FakeOpener({API: TimeoutError("timed out")}), pause=0,
+                       today="2026-10-26")
+        with self.assertRaises(nse.NseError) as e:
+            c.get_text(API, cookie=False, cache=False)
+        self.assertIn("could not reach", str(e.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
