@@ -17,8 +17,9 @@ browser, save what it shows, and run again with --file (one symbol) or
 --offline DIR holding announcements-<SYMBOL>.json files.
 
 State: trader/state/news.json remembers what you have seen (90 days), so an
-item shows once. Exit code 0 when something new is shown, 1 when nothing
-is new, 2 when NSE blocked a request.
+item shows once. Exit code 0 when something new is shown, 1 when nothing is new
+and every symbol was checked, 2 when anything could not be checked (an error, or
+NSE blocked a request).
 
 An announcement is the company's own filing: open the attachment before
 acting, and treat nothing here as advice.
@@ -198,13 +199,13 @@ def main(argv=None):
             save_state(a.state, state, now)
     except (NewsError, nse.NseError, nse_calendar.CalendarError, nse_symbols.SymbolError, watchlist.WatchError) as e:
         print("news.py: %s" % e, file=sys.stderr)
-        return 1
+        return 2
     if a.json:
         print(json.dumps({"items": [dict(i, when=i["when"].isoformat()) for i in shown], "errors": errors,
                           "blocked": blocked}, indent=2))
     else:
         print(render(shown, errors, blocked))
-    if blocked:
+    if blocked or errors:
         return 2
     return 0 if shown else 1
 

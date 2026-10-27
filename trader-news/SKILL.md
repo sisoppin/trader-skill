@@ -55,7 +55,8 @@ financial results counts as results.
 ## Steps
 
 1. Run `news.py` (or with `--symbols`). Exit 0 means something new, 1
-   means nothing new, 2 means NSE blocked a request.
+   means nothing new, 2 means something could not be checked: read the
+   error or blocked lines.
 2. Tell the user each new item in one line: the stock, the category, what
    it says. Point to the attachment for anything that matters.
 3. For results, offer `/trader-analyst`. For a dividend, mention the record

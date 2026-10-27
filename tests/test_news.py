@@ -87,12 +87,12 @@ class Run(unittest.TestCase):
         code, text, _ = run(["--symbols", "INFY", "--file", path, "--state", self.state, "--now", NOW])
         self.assertEqual(code, 0)
         code, _, err = run(["--symbols", "INFY", "TCS", "--file", path, "--state", self.state, "--now", NOW])
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 2)
         self.assertIn("exactly one", err)
 
     def test_missing_offline_file_is_an_error_line(self):
         code, text, _ = run(["--symbols", "INFY", "TCS", "--offline", NDIR, "--state", self.state, "--now", NOW])
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         self.assertIn("error: TCS: no saved announcements", text)
 
     def test_seen_ids_older_than_90_days_are_forgotten(self):
@@ -118,6 +118,30 @@ class Blocked(unittest.TestCase):
         self.assertIn("symbol=INFY", blocked[0])
 
 
+class Exit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = os.path.join(self.tmp.name, "news.json")
+        self.real_client = news.nse.Client
+
+    def tearDown(self):
+        news.nse.Client = self.real_client
+        self.tmp.cleanup()
+
+    def test_main_exits_2_and_prints_the_blocked_url(self):
+        class Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def get_json(self, url):
+                raise news.nse.NseBlocked(url, "HTTP 403")
+        news.nse.Client = Client
+        code, text, _ = run(["--symbols", "INFY", "--state", self.state, "--now", NOW])
+        self.assertEqual(code, 2)
+        self.assertIn("blocked: ", text)
+        self.assertIn("symbol=INFY", text)
+
+
 class Watch(unittest.TestCase):
     def test_holdings_and_targets(self):
         with tempfile.TemporaryDirectory() as d:
@@ -130,7 +154,7 @@ class Watch(unittest.TestCase):
             self.assertEqual(news.watchlist.watch_list(kd, targets), ["INFY", "TCS", "HDFCBANK"])
             code, _, err = run(["--kite-dir", os.path.join(d, "none"), "--targets", os.path.join(d, "none.json"),
                                 "--now", NOW])
-            self.assertEqual(code, 1)
+            self.assertEqual(code, 2)
             self.assertIn("which stocks?", err)
 
 
