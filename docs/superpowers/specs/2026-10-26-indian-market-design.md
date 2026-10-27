@@ -27,7 +27,7 @@ The pack stays at 11 skills. `trader-pelosi` is renamed `trader-insider`.
 | trader-copycat | `--investor NAME`: holdings of more than 1% from quarterly NSE shareholding patterns (partial portfolio; weights derived from holding value). `--fund NAME --file portfolio.csv`: full monthly AMC portfolio, with weights from % of NAV. Quarter (or month) diff: new, added, trimmed, sold. Writes `trader/targets.json`. | NSE, user CSV |
 | trader-news | NSE corporate announcements for held and watched symbols, with categories (results, board meeting, dividend, pledge, acquisition) and the existing dedup state. | NSE |
 | trader-insider | SEBI PIT insider trades (promoters, directors, KMP) and NSE bulk and block deals. Alerts once per new filing. Writes `trader/insider.json`. | NSE |
-| trader-analyst | Quarterly results: revenue, net profit, EPS, operating margin, YoY and QoQ growth. Writes `trader/metrics.json`. | NSE financial results |
+| trader-analyst | Quarterly results: revenue, net profit, EPS, operating margin, YoY and QoQ growth. Writes `trader/metrics.json`. | NSE integrated filing (financials) XBRL; the older results page stops at Dec 2024 |
 | trader-screener | Same rule engine, rupee fields, reads Indian metrics. | none |
 | trader-budget | Turns targets into whole-share quantities from Kite LTP, picks CNC or MIS, and estimates charges. Writes `trader/orders.json`. | Kite snapshot |
 | trader-risk | PASS/BLOCK gate with the Indian rules in section 4. | Kite snapshot |
@@ -70,7 +70,7 @@ A probe on 2026-10-26 found that the announcements, holiday-master and sharehold
 
 ### 3.3 AMC fund portfolios
 
-The user downloads the AMC's monthly portfolio and saves the sheet as CSV. The parser finds the header row by matching column names (ISIN, instrument or company name, quantity, market value, % to NAV) case-insensitively and skips debt, cash and derivative rows (ISINs not starting with `INE`, or rows without a % of NAV). It stays standard-library only.
+The user downloads the AMC's monthly portfolio and saves the sheet as CSV. The parser finds the header row by matching column names (ISIN, instrument or company name, quantity, market value, % to NAV) case-insensitively and keeps only equity shares of Indian companies: an ISIN starting with `INE` whose security code (characters 8 and 9) is `01`. That skips bonds and debentures of the same companies, cash, TREPS, derivatives, foreign stocks and rows without a % of NAV. It stays standard-library only.
 
 ## 4. Orders and safety
 
