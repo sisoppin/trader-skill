@@ -64,7 +64,7 @@ def parse(text):
             cols = {"isin": isin, "pct": pct, "name": _col(h, NAME), "qty": _col(h, QTY), "value": _col(h, VALUE)}
             break
     if header_at is None:
-        raise AmcError("no header row with an ISIN column and a %% to NAV column (is this the AMC's portfolio sheet "
+        raise AmcError("no header row with an ISIN column and a % to NAV column (is this the AMC's portfolio sheet "
                        "saved as CSV?)")
     cell = lambda r, k: r[cols[k]] if cols[k] is not None and cols[k] < len(r) else ""
     out = []
@@ -76,7 +76,7 @@ def parse(text):
         out.append({"isin": isin, "name": " ".join(cell(r, "name").split()), "quantity": _num(cell(r, "qty")),
                     "value": _num(cell(r, "value")), "pct": pct})
     if not out:
-        raise AmcError("the sheet has a header row but no equity rows (INE...01... ISINs with a %% to NAV)")
+        raise AmcError("the sheet has a header row but no equity rows (INE...01... ISINs with a % to NAV)")
     if max(x["pct"] for x in out) <= 1 and sum(x["pct"] for x in out) <= 1.01:
         for x in out:  # the sheet gives fractions (0.0523), not percentages (5.23)
             x["pct"] = round(x["pct"] * 100, 4)

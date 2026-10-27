@@ -75,9 +75,12 @@ def parse(text):
         f = facts.get(ctx, {})
         try:
             shares = int(float(f["NumberOfShares"]))
+        except (KeyError, ValueError):
+            shares = None
+        try:
             pct = round(float(f["ShareholdingAsAPercentageOfTotalNumberOfShares"]) * 100, 2)
         except (KeyError, ValueError):
-            continue
+            pct = None
         holders.append({"category": _category(ctx), "name": name, "shares": shares, "pct": pct})
     total = facts.get("ShareholdingPattern_ContextI", {}).get("NumberOfShares")
     return {"symbol": head.get("Symbol", "").upper(), "company": head.get("NameOfTheCompany", ""),
@@ -100,6 +103,8 @@ def holding(doc, query):
     hits = [h for h in doc["holders"] if matches(query, h["name"])]
     if not hits:
         return None
+    if any(h["shares"] is None or h["pct"] is None for h in hits):
+        raise ShpError("%s is named in the pattern but has no share count" % query)
     return {"shares": sum(h["shares"] for h in hits), "pct": round(sum(h["pct"] for h in hits), 2),
             "names": sorted({h["name"] for h in hits}), "categories": sorted({h["category"] for h in hits})}
 

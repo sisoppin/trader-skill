@@ -59,6 +59,18 @@ class Shareholding(unittest.TestCase):
         with self.assertRaises(shp.ShpError):
             shp.parse("<html>blocked")
 
+    def test_named_holder_without_a_share_count_is_an_error(self):
+        import re
+        text = read(TITAN_Q2)
+        ctx = re.search(r'NameOfTheShareholder contextRef="D_(\w*Context\d+)">REKHA', text).group(1)
+        cut, n = re.subn(r'<in-bse-shp:NumberOfShares contextRef="%s"[^>]*>[^<]*</in-bse-shp:NumberOfShares>\n?' % ctx,
+                         "", text)
+        self.assertEqual(n, 1)
+        doc = shp.parse(cut)
+        with self.assertRaises(shp.ShpError):
+            shp.holding(doc, "Rekha Jhunjhunwala")
+        self.assertIsNotNone(shp.holding(doc, "Life Insurance Corporation of India"))
+
     def test_quarter_changes(self):
         h = lambda n: {"shares": n}
         self.assertEqual([shp.change(h(5), None), shp.change(None, h(5)), shp.change(h(6), h(5)),
@@ -85,8 +97,10 @@ class FundSheet(unittest.TestCase):
         self.assertEqual(amc.change(rows[0], dict(rows[0], pct=5.0)), "added")
 
     def test_not_a_portfolio_sheet(self):
-        with self.assertRaises(amc.AmcError):
+        with self.assertRaises(amc.AmcError) as cm:
             amc.parse("Date,Symbol,Price\n2026-10-01,INFY,1500\n")
+        self.assertIn("% to NAV", str(cm.exception))
+        self.assertNotIn("%%", str(cm.exception))
 
 
 class Investor(unittest.TestCase):
@@ -134,6 +148,23 @@ class Investor(unittest.TestCase):
         self.assertIn("not written: no price for NCC", text)
         self.assertFalse(os.path.exists(self.out))
 
+    def test_zero_or_nan_price_is_a_missing_price(self):
+        for bad in (0, "NaN", -5, "inf"):
+            self.price({"TITAN": 3400, "CRISIL": 5100, "NCC": bad})
+            code, text, err = self.cc("--symbols", "TITAN", "CRISIL", "NCC", "--write", self.out)
+            self.assertEqual(code, 2, bad)
+            self.assertIn("no price for NCC", text)
+            self.assertNotIn("unexpected", err)
+            self.assertFalse(os.path.exists(self.out))
+
+    def test_json_says_whether_targets_were_written(self):
+        self.price({"TITAN": 3400, "CRISIL": 5100, "NCC": 0})
+        code, text, _ = self.cc("--symbols", "TITAN", "CRISIL", "NCC", "--write", self.out, "--json")
+        doc = json.loads(text)
+        self.assertEqual(code, 2)
+        self.assertIsNone(doc["written"])
+        self.assertIn("no price for NCC", doc["not_written"])
+
     def test_partial_read_refuses_to_write(self):
         code, text, _ = self.cc("--symbols", "TITAN", "INFY", "--write", self.out)
         self.assertEqual(code, 2)
@@ -170,6 +201,26 @@ class Fund(unittest.TestCase):
         code, text, _ = self.cc("--top", "5")
         self.assertEqual(code, 2)
         self.assertIn("not written: ITC Limited would be in the copied holdings", text)
+        self.assertFalse(os.path.exists(self.out))
+
+    def test_json_written_path(self):
+        code, text, _ = self.cc("--top", "4", "--json")
+        doc = json.loads(text)
+        self.assertEqual((code, doc["written"], doc["not_written"]), (0, self.out, None))
+
+    def test_unlisted_stock_among_all_holdings_is_ranked_with_the_mapped_ones(self):
+        sheet = os.path.join(self.tmp.name, "five.csv")
+        lines = ["Name,ISIN,Quantity,% to NAV"]
+        for i, (isin, pct) in enumerate((("INE040A01034", 5), ("INE009A01021", 4), ("INE002A01018", 3),
+                                         ("INE101A01026", 2), ("INE467B01029", 1), ("INE999Z01019", 0.10))):
+            lines.append("Stock %d,%s,100,%s%%" % (i, isin, pct))
+        lines[-1] = "Zed Ltd,INE999Z01019,100,0.10%"
+        with open(sheet, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+        code, text, _ = run(["fund", "X", "--file", sheet, "--symbols-file", SYMS, "--now", NOW, "--top", "10",
+                             "--write", self.out])
+        self.assertEqual(code, 2)
+        self.assertIn("not written: Zed Ltd would be in the copied holdings", text)
         self.assertFalse(os.path.exists(self.out))
 
     def test_missing_symbol_list(self):

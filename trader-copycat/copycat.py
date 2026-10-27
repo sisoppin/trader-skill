@@ -31,6 +31,7 @@ advice.
 
 import argparse
 import json
+import math
 import os
 import sys
 import urllib.parse
@@ -65,9 +66,11 @@ def load_prices(path):
     out = {}
     for k, v in prices.items():
         try:
-            out[str(k).upper()] = float(v)
+            x = float(v)
         except (TypeError, ValueError):
-            pass
+            continue
+        if math.isfinite(x) and x > 0:
+            out[str(k).upper()] = x
     return out, doc.get("as_of")
 
 
@@ -178,6 +181,7 @@ def main(argv=None):
         ap.print_help()
         return 2
     errors, blocked, lines, refused = [], [], [], False
+    written, not_written = None, None
     try:
         now = nse_calendar.parse_now(a.now)
         if a.top < 0:
@@ -226,12 +230,16 @@ def main(argv=None):
             chosen = scale(rows, "pct", a.top)
             lines.append("%s: %d stocks in the sheet, copying the top %d by %% to NAV" % (
                 a.name, len([r for r in rows if r["pct"]]) + len(unmapped), len(chosen)))
+            ranked = sorted([(r["pct"], r["symbol"], None) for r in rows if r["pct"] > 0]
+                            + [(u["pct"], u["isin"], u) for u in unmapped], key=lambda x: (-x[0], x[1]))
+            crowded = [x[2] for x in (ranked[:a.top] if a.top else ranked) if x[2]]
             for r in sorted(rows, key=lambda r: (-r["pct"], r["symbol"])):
                 w = next((c["weight"] for c in chosen if c is r), None)
                 lines.append("  %-10s %6.2f%% of NAV  %-8s%s" % (r["symbol"], r["pct"], r["change"],
                                                                ("  weight %.2f" % w) if w is not None else ""))
-            cutoff = chosen[-1]["pct"] if chosen and a.top else 0
-            crowded = [u for u in unmapped if u["pct"] >= cutoff]
+            if crowded:
+                lines.append("  would be copied but not on the NSE symbol list: %s" % ", ".join(
+                    u["name"] or u["isin"] for u in crowded))
             for u in unmapped:
                 lines.append("  %-10s %6.2f%% of NAV  not on the NSE symbol list, left out: %s %s" % (
                     "?", u["pct"], u["isin"], u["name"]))
@@ -253,9 +261,11 @@ def main(argv=None):
                 raise CopyError("nothing to copy: no holding to weight")
             if why:
                 refused = True
+                not_written = why
                 lines.append("not written: %s" % why)
             else:
                 write_targets(a.write, doc)
+                written = a.write
                 lines.append("wrote %s (%d weights)" % (a.write, len(doc["weights"])))
     except (CopyError, amc.AmcError, shp.ShpError, nse.NseError, nse_calendar.CalendarError,
             nse_symbols.SymbolError) as e:
@@ -270,7 +280,8 @@ def main(argv=None):
         lines.append("blocked: " + b)
     lines.append("Someone else's portfolio, disclosed after the fact. Not financial advice.")
     if a.json:
-        print(json.dumps(dict(doc, rows=rows, errors=errors, blocked=blocked), indent=2, default=str))
+        print(json.dumps(dict(doc, rows=rows, errors=errors, blocked=blocked, written=written,
+                                    not_written=not_written), indent=2, default=str))
     else:
         print("\n".join(lines))
     return 2 if (errors or blocked or refused or (a.cmd == "investor" and missing)) else 0
