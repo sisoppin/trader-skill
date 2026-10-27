@@ -28,13 +28,22 @@ def companies(prices=True):
     return rows
 
 
+# metrics.json: real trader-analyst rows for six NSE stocks (results to the Sep or Jun 2026 quarter, read
+# 2026-10-27); prices.json: illustrative prices, labelled as such; companies.csv: the same numbers as a CSV
+# with rupee units.
+
+
 class Prices(unittest.TestCase):
     def test_pe_and_earnings_yield(self):
         by = {c["ticker"]: c for c in companies()}
-        self.assertEqual(by["AAPL"]["pe"], 39.2)       # 341.27 / 8.71
-        self.assertEqual(by["GOOGL"]["pe"], 17.8)      # 353.78 / 19.91
-        self.assertEqual(by["BAC"]["earnings_yield"], 8.04)
-        self.assertEqual(by["KO"]["price"], 90.11)
+        self.assertEqual(by["INFY"]["pe"], 19.8)       # 1500 / 75.69
+        self.assertEqual(by["TCS"]["pe"], 21.0)        # 3000 / 142.64
+        self.assertEqual(by["HDFCBANK"]["earnings_yield"], 5.48)
+        self.assertEqual(by["M&M"]["price"], 3400.0)
+
+    def test_rupee_units(self):
+        self.assertEqual([scr.to_number(v) for v in ("Rs. 1,23,456.50", "INR 12", "\u20b9 5", "rs 7%", "Rsx", "-")],
+                         [123456.5, 12.0, 5.0, 7.0, "Rsx", None])
 
     def test_no_pe_for_losses(self):
         rows = [{"ticker": "LOSS", "eps_ttm": -1.0}]
@@ -54,29 +63,29 @@ class Screen(unittest.TestCase):
 
     def test_the_example_screen(self):
         passed = [(r["ticker"], r["score"]) for r in self.results if r["passed"]]
-        self.assertEqual(passed, [("GOOGL", 0.75), ("KO", 0.25)])
+        self.assertEqual(passed, [("M&M", 0.667), ("TCS", 0.5), ("INFY", 0.417), ("ITC", 0.417)])
         fails = {r["ticker"]: r["fails"] for r in self.results if not r["passed"]}
-        self.assertEqual(fails["AAPL"], ["pe 39.2, needs <= 35"])
-        self.assertEqual(fails["BAC"], ["operating_margin is missing"])
-        self.assertEqual(fails["AXP"], ["revenue_growth_yoy 8.6, needs >= 10",
-                                        "operating_margin is missing"])
+        self.assertEqual(fails["RELIANCE"], ["operating_margin 10.4, needs >= 15"])
+        self.assertEqual(fails["HDFCBANK"], ["revenue_growth_yoy 9.4, needs >= 10",
+                                             "operating_margin is missing"])
 
-    def test_missing_can_be_skipped(self):
-        spec = dict(self.spec, missing="skip")
+    def test_a_bank_can_skip_the_operating_margin_rule(self):
+        rules = [dict(r, value=9) if r["metric"] == "revenue_growth_yoy" else r for r in self.spec["rules"]]
+        spec = dict(self.spec, rules=rules, missing="skip")
         res = {r["ticker"]: r for r in scr.screen(companies(), spec)}
-        self.assertTrue(res["BAC"]["passed"])
-        self.assertEqual(res["BAC"]["skipped"], ["operating_margin is missing"])
-        self.assertIn("operating_margin", res["BAC"]["rank_gaps"])
+        self.assertTrue(res["HDFCBANK"]["passed"])
+        self.assertEqual(res["HDFCBANK"]["skipped"], ["operating_margin is missing"])
+        self.assertIn("operating_margin", res["HDFCBANK"]["rank_gaps"])
 
     def test_every_op(self):
-        c = {"ticker": "KO", "sector": "Consumer Staples", "pe": 28.3}
+        c = {"ticker": "ITC", "sector": "Diversified FMCG", "pe": 28.3}
         cases = [({"metric": "pe", "op": "between", "value": [10, 30]}, True),
                  ({"metric": "pe", "op": "between", "value": [10, 20]}, False),
                  ({"metric": "pe", "op": "<", "value": 28.3}, False),
                  ({"metric": "pe", "op": "!=", "value": 1}, True),
-                 ({"metric": "ticker", "op": "in", "value": ["ko", "pep"]}, True),
-                 ({"metric": "ticker", "op": "not in", "value": ["KO"]}, False),
-                 ({"metric": "sector", "op": "==", "value": "consumer staples"}, True),
+                 ({"metric": "ticker", "op": "in", "value": ["itc", "hul"]}, True),
+                 ({"metric": "ticker", "op": "not in", "value": ["ITC"]}, False),
+                 ({"metric": "sector", "op": "==", "value": "diversified fmcg"}, True),
                  ({"metric": "sector", "op": ">", "value": 3}, False),
                  ({"metric": "beta", "op": "<", "value": 1}, None)]
         for rule, want in cases:
@@ -100,19 +109,38 @@ class Cli(unittest.TestCase):
             self.assertEqual(code, 0, err)
             with open(out) as fh:
                 sl = json.load(fh)
-        self.assertIn("2 of 5 companies pass", text)
-        self.assertIn("Prices as of 2026-10-13", text)
+        self.assertIn("4 of 6 companies pass", text)
+        self.assertIn("Prices as of 2026-10-27T15:30:00+05:30", text)
+        self.assertIn("    FAIL RELIANCE   operating_margin 10.4, needs >= 15", text)
         self.assertIn("not a recommendation", text)
+        self.assertNotIn("WARNING", text)
         self.assertNotIn(chr(0x2014), text)
-        self.assertEqual([p["ticker"] for p in sl["passed"]], ["GOOGL", "KO"])
-        self.assertEqual(len(sl["failed"]), 3)
+        self.assertEqual([p["ticker"] for p in sl["passed"]], ["M&M", "TCS", "INFY", "ITC"])
+        self.assertEqual((len(sl["failed"]), sl["metrics_missing"]), (2, []))
+
+    def test_a_partial_metrics_file_is_called_out(self):
+        with open(METRICS) as fh:
+            doc = json.load(fh)
+        doc["complete"], doc["errors"] = False, ["TCS: cannot read the results list"]
+        doc["companies"] = [c for c in doc["companies"] if c["symbol"] != "TCS"]
+        doc["companies"][0]["note"] = "share count changed by more than 5%"
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "metrics.json")
+            with open(p, "w") as fh:
+                json.dump(doc, fh)
+            code, text, _ = run([p, "--rules", RULES, "--prices", PRICES])
+            _, js, _ = run([p, "--rules", RULES, "--prices", PRICES, "--json"])
+        self.assertIn("WARNING: the metrics file is partial", text)
+        self.assertIn("    TCS: cannot read the results list", text)
+        self.assertIn("        note  share count changed by more than 5%", text)
+        self.assertEqual(json.loads(js)["metrics_missing"], ["TCS: cannot read the results list"])
 
     def test_csv_with_units_and_nothing_passing(self):
         csv_path = os.path.join(DIR, "companies.csv")
         rows = scr.load_metrics(csv_path)
-        self.assertEqual(rows[0]["eps_ttm"], 8.71)
-        self.assertEqual(rows[0]["revenue_growth_yoy"], 16.4)
-        self.assertIsNone(rows[1]["operating_margin"])
+        self.assertEqual((rows[0]["ticker"], rows[0]["eps_ttm"], rows[1]["eps_ttm"]), ("INFY", 75.69, 142.64))
+        self.assertEqual(rows[0]["revenue_growth_yoy"], 10.7)
+        self.assertIsNone(rows[2]["operating_margin"])
         code, text, _ = run([csv_path, "--rules", RULES])
         self.assertEqual(code, 1)   # no prices, so no pe: nothing passes
         self.assertIn("pe is missing", text)
@@ -126,7 +154,7 @@ class Cli(unittest.TestCase):
         code, text, _ = run([METRICS, "--rules", RULES, "--prices", PRICES, "--top", "1",
                              "--json"])
         self.assertEqual(code, 0)
-        self.assertEqual([p["ticker"] for p in json.loads(text)["passed"]], ["GOOGL"])
+        self.assertEqual([p["ticker"] for p in json.loads(text)["passed"]], ["M&M"])
 
 
 if __name__ == "__main__":

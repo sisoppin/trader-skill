@@ -1,5 +1,12 @@
 {
-  "as_of": "2026-10-13",
-  "source": "Yahoo Finance chart API (query1.finance.yahoo.com/v8/finance/chart), regularMarketPrice at the 2026-10-13 close",
-  "prices": {"AAPL": 341.27, "AXP": 309.84, "GOOGL": 353.78, "KO": 90.11, "BAC": 53.96}
+  "_note": "Illustrative prices for tests, not real quotes (prices come from Kite in use).",
+  "as_of": "2026-10-27T15:30:00+05:30",
+  "prices": {
+    "INFY": 1500.0,
+    "TCS": 3000.0,
+    "HDFCBANK": 950.0,
+    "RELIANCE": 1400.0,
+    "ITC": 410.0,
+    "M&M": 3400.0
+  }
 }

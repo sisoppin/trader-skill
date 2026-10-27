@@ -8,13 +8,16 @@ each one passes or fails, and ranks the ones that pass.
     python3 screen.py trader/metrics.json --rules my-rules.json --prices trader/prices.json
     python3 screen.py companies.csv --rules my-rules.json --out trader/shortlist.json --json
 
-Metrics: a JSON file ({"companies": [...]} as trader-analyst's facts.py
---metrics writes it, or a plain list of objects) or a CSV with a header row.
-Each company needs a "ticker"; every other column is a metric. Numbers in a
-CSV can carry $, % and thousands commas.
+Metrics: a JSON file ({"companies": [...]} as trader-analyst's results.py
+--write saves it, or a plain list of objects) or a CSV with a header row.
+Each company needs a "symbol" (or "ticker"); every other column is a metric.
+Numbers in a CSV can carry Rs, Rs., INR or the rupee sign, %, and commas in
+either Indian (1,23,456) or international grouping. When the analyst could
+not read every stock it marks the file {"complete": false}; the screen then
+says loudly which stocks are missing from it.
 
-Prices (optional): trader/prices.json ({"prices": {"AAPL": 341.27}}). With
-prices, the screener adds:
+Prices (optional): trader/prices.json ({"prices": {"INFY": 1500.0}}), which
+trader-alerts writes from Kite quotes. With prices, the screener adds:
     price          the price you gave it
     pe             price / eps_ttm (only when eps_ttm is above zero)
     earnings_yield 100 * eps_ttm / price, in %
@@ -42,6 +45,7 @@ import os
 import sys
 
 OPS = (">", ">=", "<", "<=", "==", "!=", "between", "in", "not in")
+RUPEE = ("rs.", "rs", "inr", "\u20b9")
 
 
 class ScreenError(Exception):
@@ -58,7 +62,12 @@ def to_number(v):
     s = str(v).strip()
     if s == "" or s.lower() in ("na", "n/a", "none", "null", "-"):
         return None
-    t = s.replace(",", "").replace("$", "").replace("%", "")
+    t = s.replace(",", "").replace("%", "").strip()
+    low = t.lower()
+    for unit in RUPEE:
+        if low.startswith(unit):
+            t = t[len(unit):].strip()
+            break
     try:
         return float(t)
     except ValueError:
@@ -90,6 +99,22 @@ def load_metrics(path):
         r["ticker"] = t
         out.append(r)
     return out
+
+
+def partial(path):
+    """The stocks a metrics file says it is missing: trader-analyst writes {"complete": false, "errors": [...],
+    "blocked": [...]} when it could not read every stock. [] when the file is complete or a CSV."""
+    if path.lower().endswith(".csv"):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        try:
+            data = json.load(fh)
+        except ValueError:
+            return []
+    if isinstance(data, dict) and data.get("complete") is False:
+        missing = [str(e) for e in (data.get("errors") or []) + (data.get("blocked") or [])]
+        return missing or ["the metrics file says it is incomplete"]
+    return []
 
 
 def add_prices(rows, prices_path):
@@ -231,30 +256,38 @@ def rank(results, keys):
 
 # ---------------------------------------------------------------- output
 
-def render(results, spec, top=None, prices_as_of=None):
+def render(results, spec, top=None, prices_as_of=None, missing=()):
     name = spec.get("name") or "screen"
     passed = [r for r in results if r["passed"]]
     out = ["%s: %d of %d companies pass." % (name, len(passed), len(results))]
     if prices_as_of:
         out.append("Prices as of %s." % prices_as_of)
+    if missing:
+        out.append("WARNING: the metrics file is partial, so these stocks are not in the screen at all:")
+        for m in missing:
+            out.append("    %s" % m)
     out.append("")
     shown = passed[:top] if top else passed
     for i, r in enumerate(shown, 1):
         score = "" if r.get("score") is None else "  score %.2f" % r["score"]
-        out.append("%2d. PASS %-6s %s%s" % (i, r["ticker"], (r.get("name") or "")[:32], score))
+        out.append("%2d. PASS %-10s %s%s" % (i, r["ticker"], (r.get("name") or "")[:32], score))
         for why in r["passes"]:
             out.append("        ok    %s" % why)
         for why in r["skipped"]:
             out.append("        skip  %s" % why)
         if r.get("rank_gaps"):
             out.append("        not ranked on: %s" % ", ".join(r["rank_gaps"]))
+        if r["metrics"].get("note"):
+            out.append("        note  %s" % r["metrics"]["note"])
     if top and len(passed) > top:
         out.append("    ... %d more pass" % (len(passed) - top))
     failed = [r for r in results if not r["passed"]]
     if failed:
         out.append("")
         for r in failed:
-            out.append("    FAIL %-6s %s" % (r["ticker"], "; ".join(r["fails"])))
+            out.append("    FAIL %-10s %s" % (r["ticker"], "; ".join(r["fails"])))
+            if r["metrics"].get("note"):
+                out.append("        note  %s" % r["metrics"]["note"])
     out.append("")
     out.append("A screen is a filter on reported numbers, not a recommendation. Read the "
                "filings (/trader-analyst) before anything goes near /trader-budget.")
@@ -275,6 +308,7 @@ def main(argv=None):
         spec = load_rules(args.rules)
         companies = load_metrics(args.metrics)
         prices_as_of = add_prices(companies, args.prices) if args.prices else None
+        missing = partial(args.metrics)
     except (ScreenError, OSError) as exc:
         print("screen: %s" % exc, file=sys.stderr)
         return 2
@@ -283,7 +317,7 @@ def main(argv=None):
     passed = [r for r in results if r["passed"]]
     shortlist = {
         "name": spec.get("name"), "rules": spec.get("rules", []), "rank": spec.get("rank", []),
-        "prices_as_of": prices_as_of,
+        "prices_as_of": prices_as_of, "metrics_missing": missing,
         "passed": [{"ticker": r["ticker"], "name": r.get("name"), "score": r.get("score"),
                     "why": r["passes"], "skipped": r["skipped"]}
                    for r in (passed[:top] if top else passed)],
@@ -293,7 +327,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(shortlist, indent=2))
     else:
-        sys.stdout.write(render(results, spec, top, prices_as_of))
+        sys.stdout.write(render(results, spec, top, prices_as_of, missing))
     if args.out:
         folder = os.path.dirname(args.out)
         if folder:
