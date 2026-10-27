@@ -8,8 +8,9 @@ from _load import ROOT
 SKILLS = ["trader-copycat", "trader-news", "trader-budget", "trader-insider", "trader-analyst",
           "trader-screener", "trader-risk", "trader-broker", "trader-tax", "trader-alerts",
           "trader-rebalance"]
-ABOUT = ("11 Claude skills that copy the investors you trust, watch the news and Congress, size every "
-         "trade to your budget, and never place an order without your yes.")
+ABOUT = ("11 Claude skills for the Indian stock market that copy the investors you trust, watch NSE filings, "
+         "size every trade to your rupee budget, and never place an order without your yes.")
+REPO = "sisoppin/trader-skill"
 # skills that can lead to an order carry the safety block
 ORDER_PATH = ["trader-copycat", "trader-budget", "trader-insider", "trader-risk", "trader-broker",
               "trader-tax", "trader-alerts", "trader-rebalance"]
@@ -69,14 +70,26 @@ class Repo(unittest.TestCase):
             market = json.load(fh)
         self.assertEqual(market["name"], "trader-skill")
         self.assertEqual(market["plugins"][0]["name"], "trader-skill")
+        for url in (plugin["homepage"], plugin["repository"], market["plugins"][0]["homepage"]):
+            self.assertEqual(url, "https://github.com/" + REPO)
+
+    def test_rebranded_with_the_original_credit_kept(self):
+        for rel in ("README.md", "CLAUDE.md", os.path.join(".claude-plugin", "plugin.json"),
+                    os.path.join(".claude-plugin", "marketplace.json")):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+                self.assertNotIn("Jakeschincariol/", fh.read(), rel)
+        with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as fh:
+            lic = fh.read()
+        self.assertIn("Copyright (c) 2026 Jake Schincariol", lic)
+        self.assertIn("Copyright (c) 2026 sisoppin", lic)
 
     def test_readme_carries_the_reel_copy(self):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
             readme = " ".join(fh.read().split())
         self.assertTrue(readme.startswith("# The Trader skill"))
         for line in (ABOUT,
-                     "https://github.com/Jakeschincariol/trader-skill install skill",
-                     "/plugin marketplace add Jakeschincariol/trader-skill",
+                     "https://github.com/%s install skill" % REPO,
+                     "/plugin marketplace add %s" % REPO,
                      "/plugin install trader-skill@trader-skill",
                      "## Fine print"):
             self.assertIn(line, readme)
