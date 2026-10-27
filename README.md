@@ -54,7 +54,7 @@ environment variable.
 
 | command | job | what it does |
 | --- | --- | --- |
-| `/trader-copycat` | Reverse Engineer | Reads an investor's 13F-HR on SEC EDGAR and rebuilds their portfolio as weights you can copy, with what they bought, added, trimmed and sold since last quarter. |
+| `/trader-copycat` | Reverse Engineer | Finds an Indian investor's stakes above 1% in the NSE shareholding patterns of the stocks you name, or reads a mutual fund's monthly portfolio sheet, and turns either into weights you can copy, with what was added, trimmed and sold. |
 | `/trader-news` | News Monitor | Watches NSE corporate announcements (results, dividends, board meetings, deals, pledges) for every stock you hold and shows each new one once. |
 | `/trader-budget` | Budget Manager | Sizes every position to your rupee budget in whole NSE shares at the Kite price, keeps a cash buffer, caps any one stock and estimates Zerodha's charges. |
 | `/trader-insider` | Smart Money Tracker | Reads SEBI insider-trade disclosures (promoters, directors, key people) and NSE bulk and block deals in your stocks, and alerts you once per new filing. |
@@ -110,9 +110,8 @@ All standard-library Python. The data tools read public endpoints and are
 polite about it (SEC's rule: identify yourself, at most 10 requests a second).
 
 ```bash
-python3 trader-copycat/edgar13f.py find buffett                        # a filer's CIK
-python3 trader-copycat/edgar13f.py filings 1067983                     # its 13F-HR filings
-python3 trader-copycat/edgar13f.py --help                              # holdings, diff, copy
+python3 trader-copycat/copycat.py investor "Rekha Jhunjhunwala" --symbols TITAN NCC # >1% stakes
+python3 trader-copycat/copycat.py fund "Parag Parikh Flexi Cap" --file oct.csv      # a fund's sheet
 python3 trader-news/news.py --symbols INFY TCS --days 7                  # NSE announcements
 python3 trader-insider/insider.py --symbols INFY                       # insider trades + bulk/block deals
 python3 trader-analyst/results.py --symbols INFY --write               # results -> trader/metrics.json
@@ -170,7 +169,7 @@ is not tax advice.
 ## Files
 
 ```
-trader-copycat/    SKILL.md, edgar13f.py, filers.json, share_classes.json, targets.example.json
+trader-copycat/    SKILL.md, copycat.py, shp.py, amc.py, targets.example.json
 trader-news/       SKILL.md, news.py, watchlist.py
 trader-budget/     SKILL.md, size.py, charges.py, config.example.json, targets.example.json
 trader-insider/    SKILL.md, insider.py
