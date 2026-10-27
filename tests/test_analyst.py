@@ -1,162 +1,224 @@
+import datetime
 import io
 import json
 import os
+import re
+import shutil
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 
-from _load import FIX, load
+from _load import load, FIX
 
-facts = load("trader-analyst", "facts")
-DIR = os.path.join(FIX, "trader-analyst")
+res = load("trader-analyst", "results")
+screen = load("trader-screener", "screen")
+
+ADIR = os.path.join(FIX, "trader-analyst")
+NOW = "2026-10-27T10:00"
+INFY_Q2 = "INTEGRATED_FILING_INDAS_1745058_23102026082117_WEB.xml"
+BANK = "INTEGRATED_FILING_BANKING_1740912_17102026054806_WEB.xml"
 
 
-def companyfacts(cik):
-    with open(os.path.join(DIR, "companyfacts-CIK%s.json" % cik)) as fh:
-        return json.load(fh)
+def read(name):
+    with open(os.path.join(ADIR, name), encoding="utf-8") as fh:
+        return fh.read()
 
 
-def run(args):
+def run(argv):
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
-        code = facts.main(args)
+        code = res.main(argv)
     return code, out.getvalue(), err.getvalue()
 
 
-class Apple(unittest.TestCase):
-    def setUp(self):
-        self.r = facts.analyse(companyfacts("0000320193"), quarters=8)
+class Xbrl(unittest.TestCase):
+    def test_infy_quarter(self):
+        f = res.parse_xbrl(read(INFY_Q2))
+        self.assertEqual(f["period_end"], datetime.date(2026, 9, 30))
+        q = res.figures(f)
+        self.assertEqual((q["revenue"], q["net_profit"], q["eps"], q["bank"]), (492440000000.0, 78230000000.0, 19.32, False))
+        self.assertEqual(q["operating_profit"], 110630000000.0 + 1150000000.0 - 8480000000.0)
 
-    def test_latest_quarter(self):
-        q = self.r["rows"][0]
-        self.assertEqual(q["end"], "2026-06-27")
-        self.assertEqual(q["fiscal"], "Q3 2026")
-        self.assertEqual(q["revenue"], 109417000000)
-        self.assertEqual(q["net_income"], 29789000000)
-        self.assertEqual(q["eps_diluted"], 2.02)
-        self.assertEqual(q["revenue_yoy"], 16.4)    # vs 94,036 a year earlier
-        self.assertEqual(q["eps_yoy"], 28.7)        # vs 1.57
-        self.assertEqual(q["gross_margin"], 50.1)
-        self.assertEqual(q["operating_margin"], 32.6)
-        self.assertEqual(q["net_margin"], 27.2)
-        self.assertFalse(q["derived"])
+    def test_bank_format(self):
+        q = res.figures(res.parse_xbrl(read(BANK)))
+        self.assertEqual((q["revenue"], q["net_profit"], q["eps"], q["bank"], q["operating_profit"]),
+                         (834266000000.0, 195099600000.0, 12.66, True, None))
 
-    def test_fiscal_labels_come_from_the_first_filing(self):
-        labels = [r["fiscal"] for r in self.r["rows"][:6]]
-        self.assertEqual(labels, ["Q3 2026", "Q2 2026", "Q1 2026", "Q4 2025", "Q3 2025", "Q2 2025"])
-
-    def test_q4_is_derived_from_the_10k(self):
-        q4 = next(r for r in self.r["rows"] if r["end"] == "2025-09-27")
-        self.assertTrue(q4["derived"])
-        # FY2025 416,161 minus Q1 124,300, Q2 95,359, Q3 94,036
-        self.assertEqual(q4["revenue"], 102466000000)
-        self.assertEqual(q4["revenue_yoy"], 7.9)
-
-    def test_trailing_twelve_months(self):
-        self.assertEqual(self.r["ttm"]["revenue"], 466823000000)
-        self.assertEqual(self.r["ttm"]["net_income"], 128930000000)
-        self.assertEqual(self.r["ttm"]["eps_diluted"], 8.71)
-
-    def test_what_changed_in_words(self):
-        lines = facts.changes(self.r)
-        self.assertIn("revenue $109.42B (+16.4% vs a year earlier)", lines[0])
-        self.assertIn("diluted EPS $2.02 (+28.7%)", lines[0])
-        self.assertTrue(any(l.startswith("Gross margin 50.1% (+0.8 points") for l in lines))
-
-    def test_restated_values_win_but_labels_stay(self):
-        facts_ = [
-            {"start": "2025-01-01", "end": "2025-03-31", "val": 100, "fy": 2025, "fp": "Q1",
-             "form": "10-Q", "filed": "2025-05-01", "accn": "a"},
-            {"start": "2025-01-01", "end": "2025-03-31", "val": 90, "fy": 2026, "fp": "Q1",
-             "form": "10-Q", "filed": "2026-05-01", "accn": "b"},
-            {"start": "2025-01-01", "end": "2025-03-31", "val": 1, "fy": 2025, "fp": "Q1",
-             "form": "8-K", "filed": "2025-04-20", "accn": "c"},
-        ]
-        q = facts.quarterly(facts_)
-        self.assertEqual(q["2025-03-31"]["value"], 90)
-        self.assertEqual((q["2025-03-31"]["fy"], q["2025-03-31"]["fp"]), (2025, "Q1"))
+    def test_block_page_is_an_error(self):
+        with self.assertRaises(res.ResultsError):
+            res.parse_xbrl("<html><body>Access Denied</body></html>")
 
 
-class Filings(unittest.TestCase):
-    def test_latest_10q_and_earnings_press_release(self):
-        with open(os.path.join(DIR, "submissions-CIK0000320193.json")) as fh:
-            sub = json.load(fh)
-        f = facts.latest_filings(sub, "0000320193", facts.Fetcher(offline=DIR))
-        self.assertEqual(f["report"]["form"], "10-Q")
-        self.assertEqual(f["report"]["period"], "2026-06-27")
-        self.assertTrue(f["report"]["url"].endswith("/000032019326000020/aapl-20260627.htm"))
-        e = f["earnings_8k"]
-        self.assertEqual(e["filed"], "2026-07-30")
-        self.assertEqual(e["exhibit"], "https://www.sec.gov/Archives/edgar/data/320193/"
-                                       "000032019326000018/a8-kex991q3202606272026.htm")
+class Labels(unittest.TestCase):
+    def test_fiscal_quarters(self):
+        self.assertEqual([res.fy_label(datetime.date(*d)) for d in ((2026, 9, 30), (2026, 3, 31), (2025, 12, 31))],
+                         ["Q2 FY27", "Q4 FY26", "Q3 FY26"])
 
-    def test_exhibit_names_seen_on_edgar(self):
-        pick = facts.exhibit_name
-        self.assertEqual(pick(["axp-20260724.htm", "q226exhibit991.htm", "q226exhibit992.htm",
-                               "R1.htm"], "axp-20260724.htm"), "q226exhibit991.htm")
-        self.assertEqual(pick(["goog-20260722.htm", "googexhibit991q22026.htm"],
-                              "goog-20260722.htm"), "googexhibit991q22026.htm")
-        self.assertEqual(pick(["a2026q2earningsreleaseex-9.htm", "ko-20260728.htm"],
-                              "ko-20260728.htm"), "a2026q2earningsreleaseex-9.htm")
-        self.assertEqual(pick(["bac-06302026ex993.htm", "bac-06302026ex991.htm"]),
-                         "bac-06302026ex991.htm")
-        self.assertIsNone(pick(["only-8k.htm"], "only-8k.htm"))
+    def test_quarter_steps(self):
+        self.assertEqual(res._months_back(datetime.date(2026, 3, 31), 3), datetime.date(2025, 12, 31))
+        self.assertEqual(res._months_back(datetime.date(2026, 9, 30), 12), datetime.date(2025, 9, 30))
+        self.assertEqual(res._months_back(datetime.date(2026, 6, 30), 3), datetime.date(2026, 3, 31))
 
 
-class LaggingData(unittest.TestCase):
-    def test_says_when_sec_facts_trail_a_filed_10q(self):
-        code, out, err = run(["KO", "--offline", DIR])
-        self.assertEqual(code, 0, err)
-        self.assertIn("COCA COLA CO (KO)", out)
-        self.assertIn("NOTE: SEC's XBRL facts stop at 2026-04-03, but a 10-Q for the period "
-                      "ending 2026-07-03 was filed 2026-07-29", out)
+class Pick(unittest.TestCase):
+    def f(self, q, basis, filed, link="x.xml"):
+        return {"quarter": datetime.date(*q), "basis": basis, "xbrl": link, "filed": datetime.date(*filed),
+                "broadcast": "", "name": "X"}
 
-    def test_one_offs_are_flagged(self):
-        result = {"rows": [
-            {"end": "2026-06-30", "derived": False, "revenue": 100.0, "net_income": 90.0,
-             "operating_income": 30.0, "eps_diluted": 1.0, "revenue_yoy": 10.0,
-             "net_income_yoy": 200.0, "eps_yoy": 200.0, "gross_margin": None,
-             "operating_margin": 30.0, "net_margin": 90.0}]}
-        self.assertTrue(any("above operating income" in l for l in facts.changes(result)))
+    def test_revised_filing_replaces_the_original_and_consolidated_wins(self):
+        got = res.pick([self.f((2026, 9, 30), "consolidated", (2026, 10, 20), "a.xml"),
+                        self.f((2026, 9, 30), "consolidated", (2026, 10, 25), "b.xml"),
+                        self.f((2026, 9, 30), "standalone", (2026, 10, 26), "c.xml")])
+        self.assertEqual([g["xbrl"] for g in got], ["b.xml"])
+
+    def test_standalone_only_company(self):
+        got = res.pick([self.f((2026, 9, 30), "standalone", (2026, 10, 20))])
+        self.assertEqual(got[0]["basis"], "standalone")
+
+    def test_not_a_list(self):
+        with self.assertRaises(res.ResultsError):
+            res.parse_list([], "INFY")
 
 
 class Cli(unittest.TestCase):
-    def test_metrics_file_for_the_screener(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "trader", "metrics.json")
-            code, out, err = run(["AAPL", "KO", "--offline", DIR, "--metrics", path])
-            self.assertEqual(code, 0, err)
-            with open(path) as fh:
-                data = json.load(fh)
-        rows = {r["ticker"]: r for r in data["companies"]}
-        self.assertEqual(sorted(rows), ["AAPL", "KO"])
-        self.assertEqual(rows["AAPL"]["eps_ttm"], 8.71)
-        self.assertEqual(rows["AAPL"]["revenue_growth_yoy"], 16.4)
-        self.assertEqual(rows["KO"]["period_end"], "2026-04-03")
-        self.assertIn("wrote", out)
-        self.assertNotIn(chr(0x2014), out)
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
 
-    def test_unknown_ticker_and_no_user_agent(self):
-        code, _, err = run(["ZZZZ", "--offline", DIR])
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_infy_metrics(self):
+        code, text, _ = run(["--symbols", "INFY", "--offline", ADIR, "--now", NOW, "--json"])
+        self.assertEqual(code, 0)
+        r = json.loads(text)["companies"][0]
+        self.assertEqual((r["quarter"], r["basis"], r["filed"]), ("Q2 FY27", "consolidated", "2026-10-23"))
+        self.assertEqual((r["revenue_growth_yoy"], r["revenue_growth_qoq"], r["net_profit_growth_yoy"],
+                          r["net_profit_growth_qoq"], r["eps_growth_yoy"]), (10.7, 2.1, 6.2, 0.7, 8.8))
+        self.assertEqual((r["operating_margin"], r["net_margin"], r["eps_ttm"]), (21.0, 15.9, 75.69))
+        self.assertIsNone(r["note"])
+        self.assertEqual(r["shares"], 20260000000.0 / 5)
+
+    def split_copy(self):
+        d = os.path.join(self.tmp.name, "split")
+        shutil.copytree(ADIR, d)
+        p = os.path.join(d, INFY_Q2)
+        with open(p, encoding="utf-8") as fh:
+            x = fh.read()
+        x, n1 = re.subn(r'(<in-capmkt:FaceValueOfEquityShareCapital[^>]*>)[^<]*', r"\g<1>2.5", x)
+        x, n2 = re.subn(r'(<in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations[^>]*>)[^<]*',
+                        r"\g<1>9.66", x)
+        self.assertEqual((n1, n2), (1, 1))
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(x)
+        return d
+
+    def test_split_leaves_out_eps_growth_and_ttm(self):
+        d = self.split_copy()
+        code, text, _ = run(["--symbols", "INFY", "--offline", d, "--now", NOW, "--json"])
+        self.assertEqual(code, 0)
+        r = json.loads(text)["companies"][0]
+        self.assertEqual((r["eps_ttm"], r["eps_growth_yoy"], r["revenue_growth_yoy"]), (None, None, 10.7))
+        self.assertIn("share count changed", r["note"])
+        code, text, _ = run(["--symbols", "INFY", "--offline", d, "--now", NOW])
+        self.assertIn("    note        share count changed", text)
+
+    def test_wrong_quarter_in_a_list_row_is_an_error(self):
+        d = os.path.join(self.tmp.name, "mix")
+        shutil.copytree(ADIR, d)
+        pj = os.path.join(d, "results-INFY.json")
+        with open(pj) as fh:
+            doc = json.load(fh)
+        n = 0
+        for r in doc["data"]:
+            if r["qe_Date"] == "30-JUN-2026" and r["consolidated"].lower() == "consolidated":
+                r["xbrl"] = r["xbrl"].rsplit("/", 1)[0] + "/" + INFY_Q2
+                n += 1
+        self.assertEqual(n, 1)
+        with open(pj, "w") as fh:
+            json.dump(doc, fh)
+        code, text, _ = run(["--symbols", "INFY", "--offline", d, "--now", NOW])
         self.assertEqual(code, 2)
-        self.assertIn("no SEC CIK for ZZZZ", err)
-        old = os.environ.pop("SEC_USER_AGENT", None)
-        try:
-            code, _, err = run(["AAPL", "--config", "/nonexistent.json"])
-            self.assertEqual(code, 2)
-            self.assertIn("User-Agent", err)
-            self.assertIsNone(facts.user_agent("Your Name you@example.com"))
-        finally:
-            if old is not None:
-                os.environ["SEC_USER_AGENT"] = old
+        self.assertIn("but NSE lists it for", text)
 
-    def test_json_output(self):
-        code, out, err = run(["AAPL", "--offline", DIR, "--json", "--quarters", "4"])
-        self.assertEqual(code, 0, err)
-        data = json.loads(out)
-        self.assertEqual(len(data[0]["result"]["rows"]), 4)
-        self.assertEqual(data[0]["result"]["concepts"]["revenue"],
-                         ["RevenueFromContractWithCustomerExcludingAssessedTax"])
+    def test_text_report(self):
+        code, text, _ = run(["--symbols", "INFY", "--offline", ADIR, "--now", NOW])
+        self.assertIn("INFY  Q2 FY27 (2026-09-30, consolidated)", text)
+        self.assertIn("revenue     Rs 49,244 cr  (+10.7% YoY, +2.1% QoQ)", text)
+        self.assertIn("Not financial advice", text)
+
+    def test_bank_with_one_quarter(self):
+        code, text, _ = run(["--symbols", "HDFCBANK", "--standalone", "--offline", ADIR, "--now", NOW, "--json"])
+        self.assertEqual(code, 0)
+        r = json.loads(text)["companies"][0]
+        self.assertEqual((r["bank"], r["operating_margin"], r["revenue_growth_yoy"], r["eps_ttm"]), (True, None, None, None))
+
+    def test_missing_quarter_leaves_qoq_and_ttm_empty(self):
+        d = os.path.join(self.tmp.name, "gap")
+        shutil.copytree(ADIR, d)
+        with open(os.path.join(d, "results-INFY.json")) as fh:
+            doc = json.load(fh)
+        doc["data"] = [r for r in doc["data"] if r["qe_Date"] != "30-JUN-2026"]
+        with open(os.path.join(d, "results-INFY.json"), "w") as fh:
+            json.dump(doc, fh)
+        code, text, _ = run(["--symbols", "INFY", "--offline", d, "--now", NOW, "--json"])
+        r = json.loads(text)["companies"][0]
+        self.assertEqual((r["revenue_growth_qoq"], r["eps_ttm"], r["revenue_growth_yoy"]), (None, None, 10.7))
+
+    def test_write_marks_partial_runs_and_the_screener_reads_it(self):
+        out = os.path.join(self.tmp.name, "metrics.json")
+        code, text, _ = run(["--symbols", "INFY", "TCS", "--offline", ADIR, "--now", NOW, "--write", out])
+        self.assertEqual(code, 2)
+        self.assertIn("error: TCS: cannot read", text)
+        with open(out) as fh:
+            doc = json.load(fh)
+        self.assertEqual((doc["complete"], len(doc["companies"]), len(doc["errors"])), (False, 1, 1))
+        self.assertEqual([c["symbol"] for c in screen.load_metrics(out)], ["INFY"])
+
+    def test_no_symbols(self):
+        code, _, err = run(["--kite-dir", self.tmp.name, "--targets", os.path.join(self.tmp.name, "none.json"),
+                            "--offline", ADIR, "--now", NOW])
+        self.assertEqual(code, 2)
+        self.assertIn("which stocks?", err)
+
+
+class Network(unittest.TestCase):
+    def tearDown(self):
+        if hasattr(self, "real"):
+            res.nse.Client = self.real
+
+    def test_symbol_is_encoded_and_a_bad_xbrl_is_forgotten(self):
+        doc = json.loads(read("results-INFY.json"))
+
+        class Client:
+            urls, forgot, caches = [], [], []
+
+            def get_json(self, url, cache=True):
+                self.urls.append(url)
+                self.caches.append(cache)
+                return doc
+
+            def get_text(self, url, cookie=True, cache=True):
+                return "<html>blocked</html>"
+
+            def forget(self, url):
+                self.forgot.append(url)
+        c = Client()
+        with self.assertRaises(res.ResultsError):
+            res.fetch("M&M", c)
+        self.assertTrue(c.urls[0].endswith("symbol=M%26M&type=Integrated%20Filing-%20Financials"))
+        self.assertEqual(c.caches, [False])
+        self.assertEqual(len(c.forgot), 1)
+
+    def test_blocked_exits_2_with_the_offline_hint(self):
+        class Client:
+            def get_json(self, url, cache=True):
+                raise res.nse.NseBlocked(url, "HTTP 403")
+        self.real = res.nse.Client
+        res.nse.Client = Client
+        code, text, _ = run(["--symbols", "INFY", "--now", NOW])
+        self.assertEqual(code, 2)
+        self.assertIn("blocked: ", text)
+        self.assertIn("--offline", text)
 
 
 if __name__ == "__main__":

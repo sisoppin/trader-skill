@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Rebalancer for trader-rebalance. Standard library only, no network.
 
-Compares what you hold (trader/portfolio.json at trader/prices.json) with
-your target weights (trader/targets.json, capped by your rules) and proposes
-the trades that bring every stock outside the band back to its target.
+Compares what you hold, from the Kite snapshots (holdings, today's delivery
+positions, margins for cash, quotes for prices), with your target weights
+(trader/targets.json, capped by your rules) and proposes the LIVE orders that
+bring every stock outside the band back to its target. It never places
+anything: trader-risk checks each order and trader-broker asks for your yes.
 
     python3 rebalance.py                      # report only
     python3 rebalance.py --band 5 --write     # write trader/orders.json (proposals)
@@ -11,7 +13,7 @@ the trades that bring every stock outside the band back to its target.
     python3 rebalance.py --json
 
 The rules:
-  value         account = cash + every holding at its price
+  value         account = available cash + every holding at its Kite price
   targets       weights renormalised to 100 over the stock sleeve, which is the
                 account minus your cash buffer; no stock over max_position_pct
                 of the account (the excess is shared out, like trader-budget)
@@ -19,27 +21,48 @@ The rules:
   band          only stocks drifting MORE than the band trade (default 5
                 points, or "rebalance_band_pct" in the config); a trade takes
                 the stock all the way back to its target
-  sells first   sells are listed before buys, so the cash is there
-  cash buffer   buys only spend cash above the buffer; if there is not
-                enough, every buy is scaled down by the same share
-  min / max     trades under min_order_usd are skipped; a trade over
-                max_order_usd is cut to the max (run it again after it fills)
+  whole shares  NSE has no fractional shares; every order is a LIMIT order at
+                the Kite last price, with Zerodha's charges estimated
+  sells first   sells are listed before buys
+  cash          buys spend only cash above your buffer, charges included; sale
+                proceeds are NOT counted the same day (trader-risk does the
+                same), so run it again after the sales settle
+  min / max     orders under min_order_value are skipped; an order over
+                max_order_value is cut to the max (run it again later)
+  order count   at most max_orders_per_day orders (sells first); trader-risk
+                also counts what Kite's order book already shows today
+  open orders   a stock with an open order in Kite's order book (any status
+                but COMPLETE, REJECTED or CANCELLED) gets no new order, buy or
+                sell, until that order fills or is cancelled
   untracked     holdings not in the targets are left alone and listed, unless
                 --sell-untracked
+  blocked       stocks on your blocked list (config "blocked") are never
+                proposed, not even by --sell-untracked
+  --write       writes the proposals; if there is nothing to propose, or the
+                run stops with an error, an old file at that path is removed
 
-Exit code 0 when there are trades to propose, 1 when nothing is outside the band.
+Exit code 0 when there are orders to propose, 1 when nothing is outside the band.
 """
 
 import argparse
 import datetime
 import json
-import math
 import os
 import sys
 
-DEFAULTS = {"cash_buffer_pct": 10, "max_position_pct": 25, "max_order_usd": 2000, "min_order_usd": 5,
-            "fractional": True, "blocked": [], "rebalance_band_pct": 5, "paper": True}
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+import charges
+import kite_snapshot
+import nse_symbols
+from rupees import inr
+
+DEFAULTS = {"cash_buffer_pct": 10, "max_position_pct": 25, "max_order_value": 10000, "min_order_value": 100,
+            "max_orders_per_day": 5, "blocked": [], "rebalance_band_pct": 5}
 EPS = 1e-9
+FINISHED = ("COMPLETE", "REJECTED", "CANCELLED")
 
 
 class RebalanceError(Exception):
@@ -58,28 +81,33 @@ def read_json(path, what, required=True):
         raise RebalanceError("%s is not valid JSON: %s" % (path, e))
 
 
-def money(x):
-    x = float(x)
-    sign = "-" if x < -0.004 else ""
-    s = "{:,.2f}".format(abs(x))
-    return sign + "$" + (s[:-3] if s.endswith(".00") else s)
+def _symbol(text):
+    try:
+        return nse_symbols.normalize(text)
+    except nse_symbols.SymbolError as e:
+        raise RebalanceError(str(e))
 
 
-def fmt_qty(x):
-    s = ("%.4f" % float(x)).rstrip("0").rstrip(".")
-    return s or "0"
+def _num(v, what):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        x = None
+    if x is None or x != x or x in (float("inf"), float("-inf")) or x < 0:
+        raise RebalanceError("config %s must be a number of at least 0, got %r" % (what, v))
+    return x
 
 
 def parse_targets(doc, blocked=()):
     rows = doc.get("weights", doc) if isinstance(doc, dict) else doc
-    out = {}
     if isinstance(rows, dict):
-        rows = [{"ticker": k, "weight": v} for k, v in rows.items()]
-    blocked = {str(b).upper() for b in blocked or []}
+        rows = [{"symbol": k, "weight": v} for k, v in rows.items()]
+    blocked = {_symbol(b) for b in blocked or []}
+    out = {}
     for r in rows or []:
-        t = str(r.get("ticker") or r.get("symbol") or "").upper()
-        w = float(r.get("weight", 0) or 0)
-        if t and w > 0 and t not in blocked:
+        t = _symbol(r.get("symbol") or r.get("ticker"))
+        w = _num(r.get("weight", 0) or 0, "weight for %s" % t)
+        if w > 0 and t not in blocked:
             out[t] = out.get(t, 0.0) + w
     tot = sum(out.values())
     if not tot:
@@ -88,7 +116,7 @@ def parse_targets(doc, blocked=()):
 
 
 def capped_targets(weights, sleeve, cap):
-    """Dollar target per ticker, proportional to weight, none above the cap."""
+    """Rupee target per symbol, proportional to weight, none above the cap."""
     alloc, active, money_left = {}, dict(weights), sleeve
     while active:
         wsum = sum(active.values())
@@ -108,127 +136,142 @@ def capped_targets(weights, sleeve, cap):
     return alloc
 
 
-def holdings_of(portfolio):
-    out = {}
-    for p in (portfolio or {}).get("positions", []):
-        t = str(p.get("ticker") or p.get("symbol") or "").upper()
-        if not t:
-            continue
-        n = p.get("shares", p.get("qty"))
-        if n is None:
-            n = sum(float(l.get("shares", 0)) for l in p.get("lots", []))
-        out[t] = out.get(t, 0.0) + float(n)
-    return out
+def account(snap):
+    """(cash, {SYM: shares}) from the Kite holdings, positions (today's CNC) and margins snapshots."""
+    m = snap["margins"]
+    av = ((m or {}).get("equity") or {}).get("available") or {}
+    cash = av.get("live_balance", av.get("cash"))
+    try:
+        cash = float(cash)
+    except (TypeError, ValueError):
+        raise RebalanceError("the margins snapshot has no equity cash (Kite answer changed?)")
+    held = {}
+    for r in snap["holdings"] or []:
+        s = str(r.get("tradingsymbol", "")).upper()
+        held[s] = held.get(s, 0) + int(float(r.get("quantity") or 0) + float(r.get("t1_quantity") or 0))
+    for r in (snap["positions"] or {}).get("net") or []:
+        if r.get("product") == "CNC":
+            s = str(r.get("tradingsymbol", "")).upper()
+            held[s] = held.get(s, 0) + int(float(r.get("quantity") or 0))
+    return cash, {s: n for s, n in held.items() if n}
 
 
-def plan(portfolio, prices, weights, cfg, band=None, sell_untracked=False):
-    """Pure function: the drift table and the proposed trades."""
+def _order(sym, side, qty, price, cfg, why):
+    value = qty * price
+    est = charges.estimate("CNC", side, value, cfg.get("charges"))
+    return {"exchange": "NSE", "tradingsymbol": sym, "transaction_type": side, "quantity": str(int(qty)),
+            "product": "CNC", "order_type": "LIMIT", "price": "%.2f" % price, "validity": "DAY",
+            "variety": "regular", "est_value": "%.2f" % value, "est_charges": "%.2f" % est["total"], "why": why}
+
+
+def plan(cash, held, prices, weights, cfg, band=None, sell_untracked=False, open_orders=None):
+    """Pure function: the drift table and the proposed Kite orders."""
     c = dict(DEFAULTS)
     c.update(cfg or {})
-    band = float(c["rebalance_band_pct"] if band is None else band)
-    cash = float((portfolio or {}).get("cash", 0) or 0)
-    held = holdings_of(portfolio)
+    band = _num(c["rebalance_band_pct"] if band is None else band, "rebalance_band_pct")
+    buf_pct, cap_pct = _num(c["cash_buffer_pct"], "cash_buffer_pct"), _num(c["max_position_pct"], "max_position_pct")
+    min_o, max_o = _num(c["min_order_value"], "min_order_value"), _num(c["max_order_value"], "max_order_value")
+    max_n = int(_num(c["max_orders_per_day"], "max_orders_per_day"))
+    if buf_pct >= 100:
+        raise RebalanceError("config cash_buffer_pct must be below 100, got %r" % (c["cash_buffer_pct"],))
+    if cap_pct <= 0 or cap_pct > 100:
+        raise RebalanceError("config max_position_pct must be above 0 and at most 100, got %r"
+                             % (c["max_position_pct"],))
+    busy = {str(o.get("tradingsymbol", "")).upper() for o in open_orders or []
+            if str(o.get("status", "")).upper() not in FINISHED}
+    blocked = {_symbol(b) for b in c.get("blocked") or []}
     need = sorted(set(held) | set(weights), key=lambda t: (-weights.get(t, 0.0), t))
     missing = [t for t in need if not prices.get(t)]
     if missing:
-        raise RebalanceError("no price for %s: add to trader/prices.json (trader-alerts: alerts.py quote %s --write)"
-                             % (", ".join(missing), " ".join(missing)))
-    value = {t: held.get(t, 0.0) * prices[t] for t in need}
+        raise RebalanceError("no Kite quote for %s: add %s to the quotes call, then kite_snapshot.py save quotes"
+                             % (", ".join(missing), " ".join("NSE:" + m for m in missing)))
+    value = {t: held.get(t, 0) * prices[t] for t in need}
     total = cash + sum(value.values())
     if total <= 0:
         raise RebalanceError("the account is empty: nothing to rebalance (trader-budget sizes a first buy)")
-    buf = total * float(c["cash_buffer_pct"]) / 100.0
-    cap = total * float(c["max_position_pct"]) / 100.0
+    buf = total * buf_pct / 100.0
+    cap = total * cap_pct / 100.0
     target = capped_targets(weights, total - buf, cap)
-    whole = not c.get("fractional", True)
-    min_o, max_o = float(c.get("min_order_usd") or 0), float(c.get("max_order_usd") or 0)
 
     rows, sells, buys, notes = [], [], [], []
     for t in need:
         tracked = t in weights
         tgt = target.get(t, 0.0)
-        cur_pct = 100.0 * value[t] / total
-        tgt_pct = 100.0 * tgt / total
+        cur_pct, tgt_pct = 100.0 * value[t] / total, 100.0 * tgt / total
         drift = cur_pct - tgt_pct
-        row = {"ticker": t, "shares": round(held.get(t, 0.0), 6), "price": prices[t], "value": round(value[t], 2),
+        row = {"symbol": t, "shares": held.get(t, 0), "price": prices[t], "value": round(value[t], 2),
                "current_pct": round(cur_pct, 2), "target_pct": round(tgt_pct, 2),
-               "drift": round(drift, 2) if abs(drift) >= 0.005 else 0.0,
-               "target_usd": round(tgt, 2), "tracked": tracked, "action": "hold"}
+               "drift": round(drift, 2) if abs(drift) >= 0.005 else 0.0, "target_value": round(tgt, 2),
+               "tracked": tracked, "action": "hold"}
         rows.append(row)
+        if t in busy:
+            row["action"] = "open order in Kite, skipped"
+            notes.append("%s has an open order in Kite's order book: wait for it to fill or cancel it, then run "
+                         "again" % t)
+            continue
         if not tracked:
-            if sell_untracked and held.get(t, 0) > EPS:
-                sells.append({"ticker": t, "usd": value[t], "qty": held[t], "all": True,
-                              "why": "not in your targets; selling the whole position (--sell-untracked)"})
+            if sell_untracked and held.get(t, 0) > 0 and t in blocked:
+                row["action"] = "blocked, left alone"
+                notes.append("%s is on your blocked list: not sold" % t)
+            elif sell_untracked and held.get(t, 0) > 0:
+                sells.append((t, held[t], "not in your targets; selling the whole position (--sell-untracked)"))
                 row["action"] = "sell all"
             else:
                 row["action"] = "untracked, left alone"
             continue
         if abs(drift) <= band + EPS:
             continue
-        delta = tgt - value[t]
         why = "drifted %+.1f points from its %.1f%% target (band %s)" % (drift, tgt_pct, _n(band))
+        delta = tgt - value[t]
         if delta < 0:
-            sells.append({"ticker": t, "usd": -delta, "qty": None, "all": False, "why": why})
+            sells.append((t, min(int(-delta // prices[t]), held.get(t, 0)), why))
             row["action"] = "sell"
         else:
-            buys.append({"ticker": t, "usd": delta, "why": why})
+            buys.append((t, delta, why))
             row["action"] = "buy"
 
     orders = []
-    cash_after = cash
-    for s in sells:
-        p = prices[s["ticker"]]
-        usd = s["usd"]
-        if max_o and usd > max_o + EPS and not s["all"]:
-            notes.append("%s sell cut to your %s max order; run again after it fills" % (s["ticker"], money(max_o)))
-            usd = max_o
-        if s["all"]:
-            qty = s["qty"]
-        else:
-            qty = usd / p
-            qty = math.floor(qty + EPS) if whole else math.floor(qty * 10000 + EPS) / 10000.0
-            qty = min(qty, held[s["ticker"]])
-        if qty <= EPS or qty * p < min_o - EPS:
-            notes.append("%s sell of %s is under your %s minimum order: skipped"
-                         % (s["ticker"], money(qty * p), money(min_o)))
+    for t, qty, why in sells:
+        p = prices[t]
+        if max_o and qty * p > max_o + EPS:
+            qty = int(max_o // p)
+            notes.append("%s sell cut to your %s max order; run again later" % (t, inr(max_o)))
+        if qty < 1 or qty * p < min_o - EPS:
+            notes.append("%s sell of %s is under one share or your %s minimum order: skipped"
+                         % (t, inr(qty * p), inr(min_o)))
             continue
-        cash_after += qty * p
-        orders.append({"symbol": s["ticker"], "side": "sell", "qty": fmt_qty(qty), "type": "market",
-                       "time_in_force": "day", "why": s["why"], "_usd": round(qty * p, 2)})
+        orders.append(_order(t, "SELL", qty, p, c, why))
 
-    spendable = max(cash_after - buf, 0.0)
-    want = sum(b["usd"] for b in buys)
+    spendable = max(cash - buf, 0.0)
+    want = sum(d for _, d, _ in buys)
     scale = 1.0
     if want > spendable + EPS:
         scale = spendable / want if want else 0.0
-        notes.append("buys scaled to %.0f%%: only %s is free above your %s cash buffer"
-                     % (100 * scale, money(spendable), money(buf)))
-    for b in buys:
-        p = prices[b["ticker"]]
-        usd = b["usd"] * scale
-        if max_o and usd > max_o + EPS:
-            notes.append("%s buy cut to your %s max order; run again after it fills" % (b["ticker"], money(max_o)))
-            usd = max_o
-        if whole:
-            qty = math.floor(usd / p + EPS)
-            if qty < 1 or qty * p < min_o - EPS:
-                notes.append("%s buy of %s does not reach one whole share or your minimum: skipped"
-                             % (b["ticker"], money(usd)))
-                continue
-            o = {"symbol": b["ticker"], "side": "buy", "qty": str(int(qty)), "_usd": round(qty * p, 2)}
-        else:
-            usd = math.floor(usd + EPS)
-            if usd < min_o - EPS or usd < 1:
-                notes.append("%s buy of %s is under your %s minimum order: skipped" % (b["ticker"], money(usd), money(min_o)))
-                continue
-            o = {"symbol": b["ticker"], "side": "buy", "notional": str(int(usd)), "_usd": float(usd)}
-        o.update({"type": "market", "time_in_force": "day", "why": b["why"]})
-        orders.append(o)
+        notes.append("buys scaled to %.0f%%: only %s is free above your %s cash buffer (sale proceeds count "
+                     "after they settle)" % (100 * scale, inr(spendable), inr(buf)))
+    for t, delta, why in buys:
+        p = prices[t]
+        rupees = delta * scale
+        if max_o and rupees > max_o + EPS:
+            rupees = max_o
+            notes.append("%s buy cut to your %s max order; run again later" % (t, inr(max_o)))
+        qty = int(rupees // p)
+        while qty and qty * p + charges.estimate("CNC", "BUY", qty * p, c.get("charges"))["total"] > rupees + EPS:
+            qty -= 1
+        if qty < 1 or qty * p < min_o - EPS:
+            notes.append("%s buy of %s does not reach one whole share or your %s minimum: skipped"
+                         % (t, inr(rupees), inr(min_o)))
+            continue
+        orders.append(_order(t, "BUY", qty, p, c, why))
 
-    spent = sum(o["_usd"] for o in orders if o["side"] == "buy")
+    if max_n and len(orders) > max_n:
+        notes.append("%d orders proposed; kept the first %d (sells first) for your %d-a-day limit, run again "
+                     "tomorrow for the rest" % (len(orders), max_n, max_n))
+        orders = orders[:max_n]
+    spent = sum(float(o["est_value"]) + float(o["est_charges"]) for o in orders if o["transaction_type"] == "BUY")
     return {"account_value": round(total, 2), "cash": round(cash, 2), "cash_buffer": round(buf, 2),
             "cap": round(cap, 2), "band": band, "rows": rows, "orders": orders, "notes": notes,
-            "cash_after": round(cash_after - spent, 2)}
+            "cash_after_buys": round(cash - spent, 2)}
 
 
 def _n(x):
@@ -236,45 +279,72 @@ def _n(x):
     return str(int(x)) if x == int(x) else "%.2f" % x
 
 
-def clean(orders):
-    return [{k: v for k, v in o.items() if not k.startswith("_")} for o in orders]
-
-
 def report(res):
     lines = ["Account %s (cash %s, buffer %s, cap %s per stock), band %s points"
-             % (money(res["account_value"]), money(res["cash"]), money(res["cash_buffer"]), money(res["cap"]),
+             % (inr(res["account_value"]), inr(res["cash"]), inr(res["cash_buffer"]), inr(res["cap"]),
                 _n(res["band"])), ""]
-    lines.append("%-7s %10s %10s %11s %9s %9s %8s  %s" % ("ticker", "shares", "price", "value", "now %",
-                                                        "target %", "drift", "action"))
+    lines.append("%-12s %7s %12s %14s %8s %9s %8s  %s" % ("symbol", "shares", "price", "value", "now %",
+                                                         "target %", "drift", "action"))
     for r in res["rows"]:
-        lines.append("%-7s %10s %10s %11s %8.2f%% %8.2f%% %+8.2f  %s"
-                     % (r["ticker"], fmt_qty(r["shares"]), money(r["price"]), money(r["value"]),
-                        r["current_pct"], r["target_pct"], r["drift"], r["action"]))
+        lines.append("%-12s %7d %12s %14s %7.2f%% %8.2f%% %+8.2f  %s"
+                     % (r["symbol"], r["shares"], inr(r["price"]), inr(r["value"]), r["current_pct"],
+                        r["target_pct"], r["drift"], r["action"]))
     lines.append("")
     if res["orders"]:
-        lines.append("Proposed orders, sells first (place_stock_order arguments, nothing has been placed):")
+        lines.append("Proposed LIVE orders, sells first (Kite place_order arguments; nothing has been placed):")
         for o in res["orders"]:
-            amt = ('notional "%s"' % o["notional"]) if "notional" in o else ('qty "%s"' % o["qty"])
-            lines.append("  %s %s %s, %s, %s  (about %s)" % (o["side"], o["symbol"], amt, o["type"],
-                                                             o["time_in_force"], money(o["_usd"])))
-        lines.append("Cash after, if all of them fill: about %s." % money(res["cash_after"]))
+            lines.append("  %s %s %s, CNC, LIMIT %s, est. %s + %s charges" % (
+                o["transaction_type"], o["quantity"], o["tradingsymbol"], inr(o["price"]), inr(o["est_value"]),
+                inr(o["est_charges"])))
+        lines.append("Cash after the buys, if they fill: about %s (sale proceeds not counted)."
+                     % inr(res["cash_after_buys"]))
     else:
         lines.append("Nothing is outside the band. No trades.")
     for n in res["notes"]:
         lines.append("Note: " + n)
     lines.append("")
-    lines.append("Selling can realize a taxable gain: check trader-tax (lots.py sell) first. Then trader-risk "
+    lines.append("Selling can realise a taxable gain: check trader-tax (lots.py sell) first. Then trader-risk "
                  "checks every order and trader-broker asks you yes or no for each one.")
     lines.append("Education and tooling, not financial advice.")
     return "\n".join(lines)
 
 
+def remove_old(path):
+    """Remove an old orders file; returns how to name it ("the old PATH (proposals from WHO)")."""
+    who = None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        who = doc.get("created_by") if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        who = None
+    os.remove(path)
+    if who and isinstance(who, str):
+        return "the old %s (proposals from %s)" % (path, who)
+    return "the old %s" % path
+
+
+def load_snapshots(kite_dir, now=None):
+    snap = {}
+    for kind in ("holdings", "positions", "margins", "orders", "quotes"):
+        try:
+            v = kite_snapshot.load(kind, kite_dir, now=now)
+        except kite_snapshot.SnapshotError as e:
+            raise RebalanceError(str(e))
+        snap[kind] = kite_snapshot.quotes(v) if kind == "quotes" else v
+    if not isinstance(snap["holdings"], list) or not isinstance(snap["positions"], dict) \
+            or not isinstance(snap["orders"], list):
+        raise RebalanceError("the holdings, positions or orders snapshot is not in Kite's shape "
+                             "(Kite answer changed?)")
+    return snap
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Bring the portfolio back to its target weights (trader-rebalance).")
-    ap.add_argument("--portfolio", default="trader/portfolio.json")
-    ap.add_argument("--prices", default="trader/prices.json")
     ap.add_argument("--targets", default="trader/targets.json")
     ap.add_argument("--config", default="trader/config.json")
+    ap.add_argument("--kite-dir", default=kite_snapshot.DIR, help="where the Kite snapshots are")
+    ap.add_argument("--now", help="pretend it is this time (ISO, IST; tests only, needs TRADER_TEST_CLOCK=1)")
     ap.add_argument("--band", type=float, help="drift band in percentage points (default 5)")
     ap.add_argument("--sell-untracked", action="store_true", help="sell holdings that are not in the targets")
     ap.add_argument("--write", nargs="?", const="trader/orders.json", metavar="PATH",
@@ -282,36 +352,46 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     try:
+        now = None
+        if a.now:
+            if os.environ.get("TRADER_TEST_CLOCK") != "1":
+                raise RebalanceError("--now is for tests only (set TRADER_TEST_CLOCK=1 to simulate)")
+            t = datetime.datetime.fromisoformat(a.now.replace("Z", "+00:00"))
+            now = t.replace(tzinfo=kite_snapshot.IST) if t.tzinfo is None else t.astimezone(kite_snapshot.IST)
         cfg = read_json(a.config, "config", required=False) or {}
-        portfolio = read_json(a.portfolio, "portfolio (your holdings and cash)")
-        pdoc = read_json(a.prices, "prices (trader-alerts: alerts.py quote --holdings --write)")
-        prices = {str(k).upper(): float(v) for k, v in (pdoc.get("prices", pdoc) or {}).items()
-                  if isinstance(v, (int, float))}
+        snap = load_snapshots(a.kite_dir, now)
+        cash, held = account(snap)
+        prices = {s: q["price"] for s, q in snap["quotes"].items()}
         weights = parse_targets(read_json(a.targets, "targets"), cfg.get("blocked"))
-        res = plan(portfolio, prices, weights, cfg, a.band, a.sell_untracked)
+        res = plan(cash, held, prices, weights, cfg, a.band, a.sell_untracked, snap["orders"])
+        removed = None
+        if a.write and not res["orders"] and os.path.exists(a.write):
+            removed = remove_old(a.write)
         if a.write and res["orders"]:
             d = os.path.dirname(a.write)
             if d:
                 os.makedirs(d, exist_ok=True)
             with open(a.write, "w", encoding="utf-8") as fh:
                 json.dump({"created_by": "trader-rebalance",
-                           "created_at": datetime.datetime.now().replace(microsecond=0).isoformat(),
-                           "status": "proposed", "paper": bool(cfg.get("paper", True)),
-                           "note": ("Proposals only, sells first. Nothing is placed until trader-risk passes "
-                                    "each order and you say yes to it in the chat."),
-                           "prices_as_of": pdoc.get("as_of", ""), "orders": clean(res["orders"])}, fh, indent=2)
+                           "created_at": (now or datetime.datetime.now(kite_snapshot.IST)).replace(microsecond=0)
+                           .isoformat(), "status": "proposed", "live": True,
+                           "note": ("Proposals only, sells first. Every order is a LIVE order with real money. "
+                                    "Nothing is placed until trader-risk passes each order and you say yes to it."),
+                           "orders": res["orders"]}, fh, indent=2)
                 fh.write("\n")
-    except RebalanceError as e:
+    except (RebalanceError, ValueError, charges.ChargesError) as e:
         print("rebalance.py: %s" % e, file=sys.stderr)
+        if a.write and os.path.exists(a.write):
+            print("Removed %s so no out-of-date proposals are left." % remove_old(a.write), file=sys.stderr)
         return 1
     if a.json:
-        out = dict(res)
-        out["orders"] = clean(res["orders"])
-        print(json.dumps(out, indent=2))
+        print(json.dumps(res, indent=2))
     else:
         print(report(res))
         if a.write and res["orders"]:
             print("Wrote %d proposed order(s) to %s." % (len(res["orders"]), a.write))
+        if removed:
+            print("Removed %s: nothing to propose." % removed)
     return 0 if res["orders"] else 1
 
 

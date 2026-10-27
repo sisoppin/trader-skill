@@ -1,0 +1,13 @@
+{
+  "fetched_at": "2026-10-26T15:00:00+05:30",
+  "data": {
+    "net": [
+      {"tradingsymbol": "INFY", "exchange": "NSE", "product": "MIS", "quantity": 5, "average_price": 1600.0, "last_price": 1612.5, "pnl": 62.5, "m2m": 62.5},
+      {"tradingsymbol": "TCS", "exchange": "NSE", "product": "MIS", "quantity": 0, "average_price": 3040.0, "last_price": 3050.5, "pnl": 21.0, "m2m": 21.0},
+      {"tradingsymbol": "RELIANCE", "exchange": "NSE", "product": "CNC", "quantity": 10, "average_price": 1380.0, "last_price": 1402.3, "pnl": 223.0, "m2m": 0.0}
+    ],
+    "day": [
+      {"tradingsymbol": "INFY", "exchange": "NSE", "product": "MIS", "quantity": 5, "average_price": 1600.0, "last_price": 1612.5, "pnl": 62.5, "m2m": 62.5}
+    ]
+  }
+}

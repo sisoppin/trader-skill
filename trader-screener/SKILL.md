@@ -1,14 +1,15 @@
 ---
 name: trader-screener
 description: >-
-  The Stock Screener. Checks a list of companies against the user's own rules
-  (revenue growth, margins, EPS, P/E, earnings yield, sector, anything in the
-  metrics file), says exactly which rule each company passes or fails and by
-  how much, and ranks the ones that pass into a shortlist. Reads the metrics
-  /trader-analyst writes from SEC filings, or any CSV. Use when the user says
+  The Stock Screener for NSE stocks. Checks a list of companies against the
+  user's own rules (revenue growth, margins, EPS, P/E, earnings yield,
+  sector, anything in the metrics file), says exactly which rule each
+  company passes or fails and by how much, and ranks the ones that pass into
+  a shortlist. Reads the metrics /trader-analyst writes from NSE results
+  filings, or any CSV with rupee or percent values. Use when the user says
   "screen for stocks", "find me companies that", "filter my watchlist",
   "which of these pass my rules", "shortlist candidates", "rank these
-  stocks", or "growing companies under 30 times earnings".
+  stocks", or "growing companies under 25 times earnings".
 argument-hint: "[metrics file] [--rules rules.json]"
 ---
 
@@ -18,7 +19,8 @@ A screen turns "I want profitable companies that are still growing and not
 too expensive" into rules a computer can check, and shows its work: every
 pass and every fail comes with the number and the threshold.
 
-Tool in this folder (standard library Python, no network):
+`${CLAUDE_SKILL_DIR}` below is this skill's folder (where this SKILL.md lives).
+The tool is standard library Python and makes no network calls:
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/screen.py" --help
@@ -26,43 +28,60 @@ python3 "${CLAUDE_SKILL_DIR}/screen.py" --help
 
 ## What it reads and writes
 
-- Metrics: `trader/metrics.json` from `/trader-analyst` (`facts.py --metrics`),
-  or any JSON list or CSV with a `ticker` column. CSV numbers may carry `$`,
-  `%` and commas.
-- Prices (optional): `trader/prices.json` (`{"prices": {"AAPL": 341.27}}`,
-  any source; `/trader-alerts` writes it). With prices it adds `price`, `pe`
-  (price / trailing EPS, only when EPS is positive) and `earnings_yield`.
-- Rules: a JSON file, `rules.example.json` in this folder to start from.
-- Writes `trader/shortlist.json` with `--out`: who passed, their score and
-  why, who failed and why.
+| file | what |
+| --- | --- |
+| `trader/metrics.json` | from `/trader-analyst` (`results.py --write`), or any JSON list or CSV with a `symbol` column |
+| `trader/prices.json` | optional, `{"prices": {"INFY": 1500.0}}`, written by `/trader-alerts` from Kite quotes |
+| `trader/rules.json` | the user's rules; start from `rules.example.json` in this folder |
+| `trader/shortlist.json` | with `--out`: who passed, their score and why, who failed and why |
+
+- The price date shown is the oldest price used, so a symbol not re-quoted since an old run is visible.
+- CSV numbers may carry `Rs`, `Rs.`, `INR` or the rupee sign, `%`, and
+  commas in Indian (1,23,456) or international grouping.
+- With prices it adds `price`, `pe` (price / TTM EPS, only when EPS is
+  positive) and `earnings_yield`.
+- When the analyst could not read every stock, the metrics file says so
+  (`"complete": false`). The screen then prints a WARNING naming the
+  missing stocks: they are not failures, they were never screened. The
+  analyst's per-stock `note` (for example a split that left TTM EPS out)
+  is shown under the company.
 
 ## The rules file
 
 ```json
-{"name": "Growing, profitable, not priced for perfection",
+{"name": "Growing, profitable, fairly priced",
  "rules": [{"metric": "revenue_growth_yoy", "op": ">=", "value": 10},
-           {"metric": "operating_margin", "op": ">=", "value": 25},
-           {"metric": "pe", "op": "<=", "value": 35}],
+           {"metric": "operating_margin", "op": ">=", "value": 15},
+           {"metric": "eps_ttm", "op": ">", "value": 0},
+           {"metric": "pe", "op": "<=", "value": 30}],
  "rank":  [{"metric": "revenue_growth_yoy", "order": "desc", "weight": 2},
-           {"metric": "pe", "order": "asc", "weight": 1}],
+           {"metric": "pe", "order": "asc", "weight": 1},
+           {"metric": "operating_margin", "order": "desc", "weight": 1}],
  "missing": "fail"}
 ```
 
 Ops: `>`, `>=`, `<`, `<=`, `==`, `!=`, `between` ([low, high]), `in` and
-`not in` (a list, for tickers or sectors to leave out). `"missing": "fail"`
-fails a company that lacks a metric a rule needs (banks have no operating
-margin in SEC's facts); `"skip"` ignores that rule for it and says so.
-Ranking scores each passing company 0 to 1 per rank metric and takes the
-weighted average.
+`not in` (a list, for symbols or sectors to leave out). `"missing": "fail"`
+fails a company that lacks a metric a rule needs; `"skip"` ignores that
+rule for it and says so. Banks have no operating margin in their results
+format, so a bank fails an operating-margin rule unless the user picks
+`"skip"` or screens banks separately. Ranking scores each passing company 0
+to 1 per rank metric and takes the weighted average.
+
+Metric names come from `/trader-analyst`: `revenue_growth_yoy`,
+`revenue_growth_qoq`, `net_profit_growth_yoy`, `net_profit_growth_qoq`,
+`eps_growth_yoy`, `operating_margin`, `net_margin`, `eps`, `eps_ttm`,
+`revenue_ttm`, `net_profit_ttm` (rupees), plus `price`, `pe` and
+`earnings_yield` when prices are given.
 
 ## Steps
 
 1. Turn the user's words into rules. Ask when a threshold is vague ("cheap"
    means what P/E?). Write them to `trader/rules.json`.
 2. Get metrics for the candidates: run `/trader-analyst` on them with
-   `--metrics trader/metrics.json` (its `facts.py AAPL AXP GOOGL KO BAC
-   --metrics trader/metrics.json`), or use the user's own CSV. Prices from
-   `trader/prices.json` if P/E matters.
+   `--write` (`results.py --symbols INFY TCS ... --write`), or use the
+   user's own CSV. For P/E, save Kite quotes for the same symbols and run
+   `/trader-alerts` `quote ... --write` to refresh `trader/prices.json`.
 3. Run the screen:
 
    ```bash
@@ -71,29 +90,31 @@ weighted average.
    ```
 
    Exit code 1 means nothing passed: say so and show the closest misses.
+   If the output has a WARNING line, say which stocks were never
+   screened.
 4. Report the shortlist with the reasons, the misses with the numbers that
-   failed, and the dates the numbers are from (the latest quarter end per
-   company, the price date). Suggest `/trader-analyst` on the top names before
-   anything else.
+   failed, and the dates the numbers are from (the quarter each company's
+   numbers are for, the price date). Suggest `/trader-analyst` on the top
+   names before anything else.
 
-## Example: the reel's five
+## Example
 
-Metrics from SEC for AAPL, AXP, GOOGL, KO and BAC, prices at the 2026-10-13
-close, and `rules.example.json`:
+Real analyst metrics for INFY, TCS, HDFCBANK, RELIANCE, ITC and M&M (read
+2026-10-27), illustrative prices, and `rules.example.json`:
 
 ```
-Growing, profitable, not priced for perfection: 2 of 5 companies pass.
- 1. PASS GOOGL  Alphabet Inc.  score 0.75   (growth 24.2, P/E 17.8)
- 2. PASS KO     COCA COLA CO   score 0.25   (growth 12.1, P/E 28.3)
-    FAIL AAPL   pe 39.2, needs <= 35
-    FAIL BAC    operating_margin is missing
-    FAIL AXP    revenue_growth_yoy 8.6, needs >= 10; operating_margin is missing
+Growing, profitable, fairly priced: 4 of 6 companies pass.
+ 1. PASS M&M        Mahindra & Mahindra Limited  score 0.67
+ 2. PASS TCS        Tata Consultancy Services Limite  score 0.50
+ 3. PASS INFY       Infosys Limited  score 0.42
+ 4. PASS ITC        ITC Limited  score 0.42
+    FAIL RELIANCE   operating_margin 10.4, needs >= 15
+    FAIL HDFCBANK   revenue_growth_yoy 9.4, needs >= 10; operating_margin is missing
 ```
 
-Then the caveats a careful analyst adds: Alphabet's latest quarter has net
-income above operating income (gains outside the business), and Coca-Cola's
-numbers stop at the quarter ending 2026-04-03 because SEC's facts lag its
-latest 10-Q.
+Then the caveat a careful analyst adds: RELIANCE, ITC and M&M are still on
+the June quarter while INFY, TCS and HDFCBANK have reported September, so
+the numbers are not all from the same three months.
 
 ## What it never does
 
@@ -106,4 +127,5 @@ latest 10-Q.
 
 Education and tooling, not financial advice. This skill only filters numbers.
 Nothing places an order except `/trader-broker`, after `/trader-risk` passes
-and the user types an explicit yes for that order.
+that exact order and the user types an explicit yes for it, and the Kite
+connector's own approval card asks once more.

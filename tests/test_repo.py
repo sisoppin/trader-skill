@@ -5,14 +5,18 @@ import unittest
 
 from _load import ROOT
 
-SKILLS = ["trader-copycat", "trader-news", "trader-budget", "trader-pelosi", "trader-analyst",
+SKILLS = ["trader-copycat", "trader-news", "trader-budget", "trader-insider", "trader-analyst",
           "trader-screener", "trader-risk", "trader-broker", "trader-tax", "trader-alerts",
           "trader-rebalance"]
-ABOUT = ("11 Claude skills that copy the investors you trust, watch the news and Congress, size every "
-         "trade to your budget, and never place an order without your yes.")
+ABOUT = ("11 Claude skills for the Indian stock market that copy the investors you trust, watch NSE filings, "
+         "size every trade to your rupee budget, and never place an order without your yes.")
+REPO = "sisoppin/trader-skill"
 # skills that can lead to an order carry the safety block
-ORDER_PATH = ["trader-copycat", "trader-budget", "trader-pelosi", "trader-risk", "trader-broker",
+ORDER_PATH = ["trader-copycat", "trader-budget", "trader-insider", "trader-risk", "trader-broker",
               "trader-tax", "trader-alerts", "trader-rebalance"]
+# helper modules copied into several skills; every copy must be the same bytes
+SHARED = ["kite_snapshot.py", "nse.py", "nse_calendar.py", "nse_symbols.py", "rupees.py", "charges.py",
+          "watchlist.py"]
 
 
 def frontmatter(path):
@@ -24,10 +28,18 @@ def frontmatter(path):
 
 def every_text_file():
     for base, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__")]
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".superpowers")]
         for f in files:
             if f.endswith((".md", ".py", ".json", ".csv", ".txt", ".xml")) or f == "LICENSE":
                 yield os.path.join(base, f)
+
+
+def us_terms():
+    terms = [re.compile(r"(?<![a-z])%s(?![a-z])" % t, re.I) for t in
+             ("sec", "edgar", "cusip", "alpaca", "nyse", "usd", "openfigi", "yahoo", "ibkr", "pelosi",
+              "congress", "house clerk", "stooq")]
+    terms += [re.compile(r"(?<![a-z0-9])13f(?![a-z])", re.I), re.compile(r"(?<!no )wash[-_ ]?sales?", re.I)]
+    return terms
 
 
 class Repo(unittest.TestCase):
@@ -37,7 +49,7 @@ class Repo(unittest.TestCase):
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
+        root = sorted(d for d in os.listdir(ROOT) if not d.startswith((".git", ".superpowers")))  # .superpowers: git-ignored plan scratch
         self.assertEqual(root, sorted([".claude", ".claude-plugin", "CLAUDE.md", "LICENSE", "docs", "README.md",
                                        "tests"] + SKILLS))
 
@@ -66,14 +78,26 @@ class Repo(unittest.TestCase):
             market = json.load(fh)
         self.assertEqual(market["name"], "trader-skill")
         self.assertEqual(market["plugins"][0]["name"], "trader-skill")
+        for url in (plugin["homepage"], plugin["repository"], market["plugins"][0]["homepage"]):
+            self.assertEqual(url, "https://github.com/" + REPO)
+
+    def test_rebranded_with_the_original_credit_kept(self):
+        for rel in ("README.md", "CLAUDE.md", os.path.join(".claude-plugin", "plugin.json"),
+                    os.path.join(".claude-plugin", "marketplace.json")):
+            with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+                self.assertNotIn("Jakeschincariol/", fh.read(), rel)
+        with open(os.path.join(ROOT, "LICENSE"), encoding="utf-8") as fh:
+            lic = fh.read()
+        self.assertIn("Copyright (c) 2026 Jake Schincariol", lic)
+        self.assertIn("Copyright (c) 2026 sisoppin", lic)
 
     def test_readme_carries_the_reel_copy(self):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as fh:
             readme = " ".join(fh.read().split())
         self.assertTrue(readme.startswith("# The Trader skill"))
         for line in (ABOUT,
-                     "https://github.com/Jakeschincariol/trader-skill install skill",
-                     "/plugin marketplace add Jakeschincariol/trader-skill",
+                     "https://github.com/%s install skill" % REPO,
+                     "/plugin marketplace add %s" % REPO,
                      "/plugin install trader-skill@trader-skill",
                      "## Fine print"):
             self.assertIn(line, readme)
@@ -88,11 +112,77 @@ class Repo(unittest.TestCase):
             self.assertNotIn("\u2014", text, rel)
             self.assertNotIn("jakeschincariol" + "@" + "gmail.com", text, rel)  # built, so this file passes too
 
-    def test_paper_trading_is_the_default(self):
+    def test_live_defaults_are_cautious(self):
         with open(os.path.join(ROOT, "trader-budget", "config.example.json")) as fh:
             cfg = json.load(fh)
-        self.assertIs(cfg["paper"], True)
-        self.assertIs(cfg.get("allow_options", False), False)
+        for k in ("allow_mis", "allow_short", "allow_market_orders", "allow_amo"):
+            self.assertIs(cfg[k], False, k)
+        self.assertLessEqual(float(cfg["max_order_value"]), 10000)
+        self.assertNotIn("paper", cfg)
+
+    def test_no_us_terms_left(self):
+        # skill code, docs, manifests and fixtures; docs/ (the spec and the plans) and the test code are history
+        terms = us_terms()
+        # (path, pattern text) pairs that are allowed: trader-risk names the US-era config keys it warns about
+        allowed = {("trader-risk/check.py", "(?<![a-z])usd(?![a-z])")}
+        hits = []
+        for path in every_text_file():
+            rel = os.path.relpath(path, ROOT)
+            if rel.startswith("docs" + os.sep) or (rel.startswith("tests" + os.sep) and rel.endswith(".py")):
+                continue
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    for t in terms:
+                        if t.search(line) and (rel.replace(os.sep, "/"), t.pattern) not in allowed:
+                            hits.append("%s:%d: %s: %s" % (rel, n, t.pattern, line.strip()[:80]))
+        self.assertEqual(hits, [], "\n" + "\n".join(hits))
+
+    def test_us_term_patterns_catch_the_old_forms(self):
+        terms = us_terms()
+        for s in ("SEC_USER_AGENT", "https://www.sec.gov/cgi-bin/browse-edgar", "value_usd", "parse_13f",
+                  "wash_sale_days", "Nyse calendar", "OpenFIGI"):
+            self.assertTrue(any(t.search(s) for t in terms), s)
+        for s in ("India has no wash-sale rule", "second", "NSE", "Securities", "secAcq"):
+            self.assertFalse(any(t.search(s) for t in terms), s)
+
+    def test_shared_helpers_are_identical(self):
+        for name in SHARED:
+            copies = [os.path.join(ROOT, s, name) for s in SKILLS if os.path.isfile(os.path.join(ROOT, s, name))]
+            self.assertTrue(copies, "%s exists in no skill" % name)
+            texts = set()
+            for p in copies:
+                with open(p, "rb") as fh:
+                    texts.add(fh.read())
+            self.assertEqual(len(texts), 1, "copies of %s differ: %s" % (name, copies))
+
+    def test_converted_order_path_skills_say_live(self):
+        for s in ("trader-budget", "trader-risk", "trader-broker", "trader-rebalance", "trader-tax", "trader-insider"):
+            _, text = frontmatter(os.path.join(ROOT, s, "SKILL.md"))
+            low = " ".join(text.lower().split())
+            self.assertIn("live", low, s)
+            self.assertIn("real money", low, s)
+            self.assertNotIn("alpaca", low, s)
+            self.assertNotIn("paper trading", low, s)
+
+    def test_every_imported_helper_is_in_the_same_skill(self):
+        names = {n[:-3] for n in SHARED}
+        for s in SKILLS:
+            folder = os.path.join(ROOT, s)
+            for f in sorted(os.listdir(folder)):
+                if not f.endswith(".py"):
+                    continue
+                with open(os.path.join(folder, f), encoding="utf-8") as fh:
+                    used = set(re.findall(r"^(?:import|from) (\w+)", fh.read(), re.M))
+                for mod in sorted(used & names):
+                    self.assertTrue(os.path.isfile(os.path.join(folder, mod + ".py")),
+                                    "%s/%s imports %s, which is not in %s" % (s, f, mod, s))
+
+    def test_alerts_example_rules_are_nse(self):
+        with open(os.path.join(ROOT, "trader-alerts", "alerts.example.json")) as fh:
+            rules = json.load(fh)["rules"]
+        syms = {r["symbol"] for r in rules if "symbol" in r}
+        self.assertEqual(syms, {"INFY", "RELIANCE", "TCS", "HDFCBANK"})
+        self.assertIn("mis_warning", {r["type"] for r in rules})
 
 
 if __name__ == "__main__":

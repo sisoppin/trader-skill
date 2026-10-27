@@ -1,0 +1,6 @@
+{
+  "fetched_at": "2026-10-26T10:00:00+05:30",
+  "data": [
+    {"tradingsymbol": "RELIANCE", "exchange": "NSE", "isin": "INE002A01018", "quantity": 2, "t1_quantity": 0, "average_price": 1380.0, "last_price": 1402.3}
+  ]
+}

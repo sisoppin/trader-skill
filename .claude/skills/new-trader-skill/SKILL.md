@@ -15,7 +15,8 @@ Read two existing skills first as the template. Pick one close to the new one, f
 
 - Create `<name>/SKILL.md` and `<name>/<script>.py` at the repo root.
 - Use Python 3.8+ and the standard library only. Give it an argparse CLI with `--help`. Read from and write to `trader/` relative to the cwd, as the other tools do.
-- Network calls need a polite User-Agent and `time.sleep` pacing. SEC calls need `SEC_USER_AGENT`, and you must never invent one.
+- NSE data goes through the shared `nse.py` client (copy it unchanged from `trader-alerts/`), and every fetch accepts `--file` or `--offline` for when NSE blocks; a block exits 2 with the URL. Kite data comes only from snapshots saved by `kite_snapshot.py`. Ask before adding any other data source.
+- Copy shared helpers unchanged from their source copy (CLAUDE.md lists them). A new shared helper goes into `SHARED` in `tests/test_repo.py`.
 - Never place orders. If the skill proposes orders, it writes them for `trader-risk` to check, and amounts are strings.
 
 ## 2. SKILL.md
@@ -35,7 +36,7 @@ Read two existing skills first as the template. Pick one close to the new one, f
 - `.claude-plugin/plugin.json`: `description` must equal the new `ABOUT` exactly.
 - `README.md`: update the first paragraph (the `ABOUT` text) and the "## The eleven" heading, and add a `/<name>` row to the command table.
 - Check `.claude-plugin/marketplace.json` for a matching description.
-- Run `grep -rn "11 Claude skills\|eleven" .` to find leftovers.
+- Run `grep -rni "11 Claude skills\|eleven" .` to find leftovers.
 
 ## 5. Verify
 

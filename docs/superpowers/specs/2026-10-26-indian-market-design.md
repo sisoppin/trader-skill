@@ -27,7 +27,7 @@ The pack stays at 11 skills. `trader-pelosi` is renamed `trader-insider`.
 | trader-copycat | `--investor NAME`: holdings of more than 1% from quarterly NSE shareholding patterns (partial portfolio; weights derived from holding value). `--fund NAME --file portfolio.csv`: full monthly AMC portfolio, with weights from % of NAV. Quarter (or month) diff: new, added, trimmed, sold. Writes `trader/targets.json`. | NSE, user CSV |
 | trader-news | NSE corporate announcements for held and watched symbols, with categories (results, board meeting, dividend, pledge, acquisition) and the existing dedup state. | NSE |
 | trader-insider | SEBI PIT insider trades (promoters, directors, KMP) and NSE bulk and block deals. Alerts once per new filing. Writes `trader/insider.json`. | NSE |
-| trader-analyst | Quarterly results: revenue, net profit, EPS, operating margin, YoY and QoQ growth. Writes `trader/metrics.json`. | NSE financial results |
+| trader-analyst | Quarterly results: revenue, net profit, EPS, operating margin, YoY and QoQ growth. Writes `trader/metrics.json`. | NSE integrated filing (financials) XBRL; the older results page stops at Dec 2024 |
 | trader-screener | Same rule engine, rupee fields, reads Indian metrics. | none |
 | trader-budget | Turns targets into whole-share quantities from Kite LTP, picks CNC or MIS, and estimates charges. Writes `trader/orders.json`. | Kite snapshot |
 | trader-risk | PASS/BLOCK gate with the Indian rules in section 4. | Kite snapshot |
@@ -70,7 +70,7 @@ A probe on 2026-10-26 found that the announcements, holiday-master and sharehold
 
 ### 3.3 AMC fund portfolios
 
-The user downloads the AMC's monthly portfolio and saves the sheet as CSV. The parser finds the header row by matching column names (ISIN, instrument or company name, quantity, market value, % to NAV) case-insensitively and skips debt, cash and derivative rows (ISINs not starting with `INE`, or rows without a % of NAV). It stays standard-library only.
+The user downloads the AMC's monthly portfolio and saves the sheet as CSV. The parser finds the header row by matching column names (ISIN, instrument or company name, quantity, market value, % to NAV) case-insensitively and keeps only equity shares of Indian companies: an ISIN starting with `INE` whose security code (characters 8 and 9) is `01`. That skips bonds and debentures of the same companies, cash, TREPS, derivatives, foreign stocks and rows without a % of NAV. It stays standard-library only.
 
 ## 4. Orders and safety
 
@@ -131,12 +131,13 @@ All rates, thresholds and dates are in a `tax_rules` block in config, not in cod
 - Financial year April to March, with reports per FY.
 - FIFO lot matching.
 - Listed equity delivery held more than 12 months is LTCG at 12.5% above the yearly exemption of Rs 1,25,000. Held 12 months or less is STCG at 20%.
-- Same-day MIS round trips are speculative business income at the user's slab rate. They are reported separately and get no exemption.
+- Same-day buy and sell of a stock (any product) is speculative business income, as the exchange nets it for delivery; it is reported separately with no exemption.
 - Grandfathering for shares bought before 2018-02-01: the cost is the higher of the actual cost and the 2018-01-31 FMV, capped at the sale price. FMV comes from a user-supplied CSV (`fmv_2018.csv`) and is not bundled.
 - Set-off: STCL against STCG then LTCG, LTCL against LTCG only, speculative loss against speculative income only. Carry-forward is tracked (8 years, and 4 for speculative).
+- Carried losses are used oldest first, across kinds.
 - Harvest view: unrealised losses that could be booked, and unused LTCG exemption headroom. There is no wash-sale logic, because India has no wash-sale rule. Suggestions become proposed orders that go through risk and broker.
-- STT is shown but not deducted from gains.
-- Inputs: `trader/kite/trades.json` and `trader/lots.csv` (date, symbol, quantity, price) for history before the tradebook.
+- STT appears in each proposed order's est_charges; it is not deducted from gains.
+- Inputs: Zerodha Console equity tradebook CSVs (the history; Kite's API returns only today's trades), today's Kite trades snapshot, and trader/lots.csv for opening lots, merged by trade id.
 
 ## 7. Repo-wide changes
 

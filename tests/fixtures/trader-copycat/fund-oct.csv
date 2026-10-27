@@ -1,0 +1,22 @@
+Synthetic test sheet in the layout AMCs use for monthly portfolios (not a real fund),,,,,,
+Example Flexi Cap Fund,,,,,,
+Portfolio as on 31-Oct-2026,,,,,,
+,,,,,,
+Sr. No.,Name of the Instrument,ISIN,Industry / Rating,Quantity,Market value (Rs. in Lakhs),% to Net Assets
+,Equity & Equity related,,,,,
+,(a) Listed / awaiting listing on Stock Exchanges,,,,,
+1,HDFC Bank Limited,INE040A01034,Banks,"52,10,000","1,02,345.67",8.12%
+2,Infosys Limited,INE009A01021,IT - Software,"41,00,000","61,500.00",4.88%
+3,Reliance Industries Limited,INE002A01018,Petroleum Products,"30,50,000","42,700.50",3.39%
+4,Mahindra & Mahindra Limited,INE101A01026,Automobiles,"9,80,000","31,360.00",2.49%
+5,ITC Limited,INE154A01025,Diversified FMCG,"60,00,000","24,600.00",1.95%
+6,Bajaj Auto Limited,INE917I01010,Automobiles,"1,10,000","9,900.00",0.79%
+7,Infosys Limited,INE009A01021,IT - Software,"1,00,000","1,500.00",0.12%
+,Sub Total,,,,"2,73,906.17",21.74%
+,(b) Foreign Securities,,,,,
+8,Alphabet Inc A,US02079K3059,Internet,"1,20,000","20,300.00",1.61%
+,Debt Instruments,,,,,
+9,7.80% HDFC Bank Ltd NCD (MD 03/05/2033),INE040A08AB1,CRISIL AAA,500,"5,050.00",0.40%
+,TREPS,,,,"18,200.00",1.44%
+,Net Receivables / (Payables),,,,"(1,250.00)",(0.10%)
+,GRAND TOTAL,,,,"12,60,000.00",100.00%

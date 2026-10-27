@@ -4,149 +4,218 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 
-from _load import FIX, load
+from _load import load, FIX
 
 news = load("trader-news", "news")
-DIR = os.path.join(FIX, "trader-news")
-NOW = "2026-10-14T00:00:00+00:00"
+
+NDIR = os.path.join(FIX, "trader-news")
+NOW = "2026-10-26T10:00"
 
 
-def raw(name):
-    with open(os.path.join(DIR, name), "rb") as fh:
-        return fh.read()
+def fixture():
+    with open(os.path.join(NDIR, "announcements-INFY.json")) as fh:
+        return json.load(fh)
 
 
-def run(args):
+def run(argv):
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
-        code = news.main(args)
+        code = news.main(argv)
     return code, out.getvalue(), err.getvalue()
 
 
-class Feeds(unittest.TestCase):
-    def test_yahoo_rss(self):
-        items = news.parse_rss(raw("yahoo-AAPL.xml"), "AAPL")
+class Parse(unittest.TestCase):
+    def test_real_announcements(self):
+        items = news.parse(fixture(), "INFY")
         self.assertEqual(len(items), 6)
+        self.assertEqual([i["category"] for i in items],
+                         ["other", "results", "analyst meet", "results", "dividend", "deal"])
         first = items[0]
-        self.assertEqual(first["title"], "Apple may have a way to dominate the smart home space")
-        self.assertEqual(first["time"], datetime.datetime(2026, 10, 13, 19, 46, 52,
-                                                          tzinfo=datetime.timezone.utc))
-        self.assertTrue(first["link"].startswith("https://finance.yahoo.com/"))
-        self.assertTrue(first["id"].startswith("rss:"))
+        self.assertEqual((first["symbol"], first["title"], first["id"]), ("INFY", "Copy of Newspaper Publication",
+                                                                         "106827749"))
+        self.assertEqual(first["when"].strftime("%Y-%m-%d %H:%M %z"), "2026-10-24 19:43 +0530")
+        self.assertTrue(first["link"].startswith("https://nsearchives.nseindia.com/"))
 
-    def test_sec_atom_8k(self):
-        items = news.parse_sec_atom(raw("sec-8-K-0000320193.xml"), "AAPL")
-        self.assertEqual([i["form"] for i in items], ["8-K/A", "8-K", "8-K"])
-        earn = items[1]
-        self.assertEqual(earn["items"], ["2.02", "9.01"])
-        self.assertTrue(earn["important"])
-        self.assertEqual(earn["title"], "Apple Inc. filed a 8-K: earnings results")
-        self.assertEqual(earn["id"], "sec:0000320193-26-000018")
-        self.assertIn("000032019326000018", earn["link"])
-        # 16:30:28 New York time is 20:30:28 UTC
-        self.assertEqual(earn["time"].isoformat(), "2026-07-30T20:30:28+00:00")
-        self.assertEqual(items[0]["title"], "Apple Inc. filed a 8-K/A: director or officer change")
+    def test_categories(self):
+        self.assertEqual(news.category("Outcome of Board Meeting", "Financial Results for the quarter"), "results")
+        self.assertEqual(news.category("Board Meeting Intimation", "to consider buyback"), "board meeting")
+        self.assertEqual(news.category("Board Meeting Intimation", "to consider fund raising"), "board meeting")
+        self.assertEqual(news.category("Disclosure of creation of pledge", ""), "pledge")
+        self.assertEqual(news.category("Copy of Newspaper Publication", ""), "other")
 
-    def test_times(self):
-        self.assertEqual(news.parse_time("Tue, 13 Oct 2026 20:02:03 +0000").hour, 20)
-        self.assertEqual(news.parse_time("2026-09-01T16:30:35-04:00").hour, 20)
-        self.assertIsNone(news.parse_time("soon"))
+    def test_categories_do_not_mislabel_common_subjects(self):
+        c = news.category
+        self.assertEqual(c("Board Meeting Intimation", "to consider and approve the Financial Results"),
+                         "board meeting")
+        self.assertEqual(c("Disclosure under SEBI Takeover Regulations", ""), "insider")
+        self.assertEqual(c("Disclosure under Regulation 31 of SEBI SAST", "encumbrance of promoter shares"), "pledge")
+        self.assertEqual(c("Closure of Trading Window", "after declaration of financial results"), "other")
+        self.assertEqual(c("Press Release", "operating margin improved"), "other")
+        self.assertEqual(c("Updates", "Board of Directors approved the plan"), "other")
+        self.assertEqual(c("Credit Rating", ""), "rating")
 
-    def test_yahoo_symbols(self):
-        self.assertEqual(news.yahoo_symbol("BRK.B"), "BRK-B")
-
-
-class Tagging(unittest.TestCase):
-    def test_touches_and_tags(self):
-        items = news.parse_rss(raw("yahoo-KO.xml"), "KO")
-        watch = {"KO": "Coca-Cola", "CVX": "Chevron", "AAPL": "Apple"}
-        news.tag(items, watch)
-        by = {i["title"][:20]: i for i in items}
-        chevron = by["Coca-Cola or Chevron"]
-        self.assertEqual(chevron["touches"], ["CVX", "KO"])
-        self.assertIn("capital", chevron["tags"])  # dividend
-        self.assertEqual(by["Is Coca-Cola (KO) St"]["touches"], ["KO"])
-
-    def test_earnings_filings_are_tagged(self):
-        items = news.tag(news.parse_sec_atom(raw("sec-8-K-0000021344.xml"), "KO"), {"KO": None})
-        self.assertEqual(items[0]["tags"][0], "earnings")
-        self.assertFalse(items[1]["important"])  # 8.01 other events
-
-    def test_dedupe_merges_the_same_story(self):
-        a = news.parse_rss(raw("yahoo-AAPL.xml"), "AAPL")
-        b = news.parse_rss(raw("yahoo-AAPL.xml"), "GOOGL")
-        items = news.dedupe(news.tag(a + b, {"AAPL": None, "GOOGL": None}))
-        self.assertEqual(len(items), 6)
-        self.assertEqual(items[0]["touches"], ["AAPL", "GOOGL"])
+    def test_not_a_list_is_an_error(self):
+        with self.assertRaises(news.NewsError):
+            news.parse({"error": "blocked"}, "INFY")
 
 
-class Check(unittest.TestCase):
+class Run(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.state = os.path.join(self.tmp.name, "state", "news.json")
-        self.base = ["--offline", DIR, "--state", self.state, "--now", NOW,
-                     "--portfolio", os.path.join(self.tmp.name, "none.json"),
-                     "--targets", os.path.join(self.tmp.name, "none.json")]
+        self.state = os.path.join(self.tmp.name, "news.json")
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_new_items_once_newest_first(self):
-        code, out, err = run(["--tickers", "AAPL", "KO", "--hours", "24", "--json"] + self.base)
-        self.assertEqual(code, 0, err)
-        data = json.loads(out)
-        times = [i["time"] for i in data["items"]]
-        self.assertEqual(times, sorted(times, reverse=True))
-        self.assertEqual(len(data["items"]), 10)  # 6 Apple + 4 Coca-Cola headlines, filings are older
-        code, out, _ = run(["--tickers", "AAPL", "KO", "--hours", "24"] + self.base)
+    def news(self, *extra):
+        return run(["--symbols", "infy.ns", "--offline", NDIR, "--state", self.state, "--now", NOW] + list(extra))
+
+    def test_new_items_show_once(self):
+        code, text, _ = self.news("--days", "7")
+        self.assertEqual(code, 0)
+        self.assertIn("2026-10-24 19:43  INFY       [other] Copy of Newspaper Publication", text)
+        self.assertIn("[results] Outcome of Board Meeting", text)
+        self.assertNotIn("Dividend", text)
+        self.assertIn("Not financial advice", text)
+        code, text, _ = self.news("--days", "7")
         self.assertEqual(code, 1)
-        self.assertIn("Nothing new.", out)
+        self.assertIn("Nothing new.", text)
+        code, text, _ = self.news("--days", "7", "--all")
+        self.assertEqual(code, 0)
+        self.assertIn("Copy of Newspaper Publication", text)
 
-    def test_filings_show_in_a_wider_window(self):
-        code, out, err = run(["--tickers", "AAPL", "--hours", "2400"] + self.base)
-        self.assertEqual(code, 0, err)
-        self.assertIn("! 2026-07-30 20:30 UTC  AAPL", out)
-        self.assertIn("earnings results", out)
-        self.assertIn("Not financial advice", out)
-        self.assertNotIn(chr(0x2014), out)
-
-    def test_tickers_from_targets(self):
-        targets = os.path.join(self.tmp.name, "targets.json")
-        with open(targets, "w") as fh:
-            json.dump({"weights": [{"ticker": "KO", "name": "Coca-Cola", "weight": 100}]}, fh)
-        args = list(self.base)
-        args[args.index("--targets") + 1] = targets
-        code, out, err = run(["--json", "--dry-run", "--hours", "24"] + args)
-        self.assertEqual(code, 0, err)
-        tickers = {t for i in json.loads(out)["items"] for t in i["touches"]}
-        self.assertEqual(tickers, {"KO"})
+    def test_window_and_json(self):
+        code, text, _ = self.news("--days", "1200", "--json", "--dry-run")
+        items = json.loads(text)["items"]
+        self.assertEqual(len(items), 6)
+        self.assertEqual(items[0]["when"], "2026-10-24T19:43:00+05:30")
         self.assertFalse(os.path.exists(self.state))
 
-    def test_no_tickers_is_an_error(self):
-        code, _, err = run(self.base)
+    def test_one_file_for_one_symbol(self):
+        path = os.path.join(NDIR, "announcements-INFY.json")
+        code, text, _ = run(["--symbols", "INFY", "--file", path, "--state", self.state, "--now", NOW])
+        self.assertEqual(code, 0)
+        code, _, err = run(["--symbols", "INFY", "TCS", "--file", path, "--state", self.state, "--now", NOW])
         self.assertEqual(code, 2)
-        self.assertIn("no tickers", err)
+        self.assertIn("exactly one", err)
 
-    def test_sec_needs_a_user_agent(self):
-        old = os.environ.pop("SEC_USER_AGENT", None)
-        try:
-            self.assertIsNone(news.sec_user_agent(None, "/nonexistent.json"))
-            self.assertIsNone(news.sec_user_agent("Your Name you@example.com"))
-            self.assertEqual(news.sec_user_agent("Ada ada@example.org"), "Ada ada@example.org")
-            with self.assertRaises(news.NewsError):
-                news.Fetcher(None).get("https://www.sec.gov/x", "x", sec=True)
-        finally:
-            if old is not None:
-                os.environ["SEC_USER_AGENT"] = old
+    def test_missing_offline_file_is_an_error_line(self):
+        code, text, _ = run(["--symbols", "INFY", "TCS", "--offline", NDIR, "--state", self.state, "--now", NOW])
+        self.assertEqual(code, 2)
+        self.assertIn("error: TCS: no saved announcements", text)
 
-    def test_state_forgets_after_30_days(self):
-        state = {"seen": {"old": "2026-08-01T00:00:00+00:00"}}
-        now = news.parse_time(NOW)
-        news.remember([], state, now)
-        self.assertNotIn("old", state["seen"])
-        self.assertEqual(state["last_check"], now.isoformat())
+    def test_a_short_window_does_not_hide_older_items_from_a_longer_one(self):
+        code, _, _ = self.news("--days", "2")
+        self.assertEqual(code, 0)
+        code, text, _ = self.news("--days", "30")
+        self.assertEqual(code, 0)
+        self.assertIn("2026-10-23", text)
+        self.assertIn("Outcome of Board Meeting", text)
+
+    def test_a_crash_in_the_state_file_exits_2(self):
+        with open(self.state, "w") as fh:
+            fh.write("[]")
+        code, _, err = self.news()
+        self.assertEqual(code, 2)
+        self.assertIn("unexpected", err)
+
+    def test_seen_ids_older_than_90_days_are_forgotten(self):
+        with open(self.state, "w") as fh:
+            json.dump({"seen": {"old": "2026-01-01T10:00:00+05:30", "new": "2026-10-20T10:00:00+05:30"}}, fh)
+        self.news("--dry-run")
+        self.news()
+        with open(self.state) as fh:
+            seen = json.load(fh)["seen"]
+        self.assertNotIn("old", seen)
+        self.assertIn("new", seen)
+        self.assertIn("106827749", seen)
+
+
+class Blocked(unittest.TestCase):
+    def test_a_blocked_symbol_exits_2_with_the_file_hint(self):
+        class Client:
+            def get_json(self, url, cache=True):
+                raise news.nse.NseBlocked(url, "HTTP 403")
+        items, errors, blocked = news.collect(["INFY"], Client())
+        self.assertEqual((items, errors), ([], []))
+        self.assertIn("--file", blocked[0])
+        self.assertIn("symbol=INFY", blocked[0])
+
+
+class Requests(unittest.TestCase):
+    def test_collect_asks_fresh_and_encodes_the_symbol(self):
+        class Client:
+            def __init__(self):
+                self.calls = []
+
+            def get_json(self, url, cache=True):
+                self.calls.append((url, cache))
+                return []
+        c = Client()
+        news.collect(["INFY", "M&M"], c)
+        self.assertEqual([x[1] for x in c.calls], [False, False])
+        self.assertTrue(c.calls[1][0].endswith("symbol=M%26M"))
+
+
+class Exit(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = os.path.join(self.tmp.name, "news.json")
+        self.real_client = news.nse.Client
+
+    def tearDown(self):
+        news.nse.Client = self.real_client
+        self.tmp.cleanup()
+
+    def test_main_exits_2_and_prints_the_blocked_url(self):
+        class Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def get_json(self, url, cache=True):
+                raise news.nse.NseBlocked(url, "HTTP 403")
+        news.nse.Client = Client
+        code, text, _ = run(["--symbols", "INFY", "--state", self.state, "--now", NOW])
+        self.assertEqual(code, 2)
+        self.assertIn("blocked: ", text)
+        self.assertIn("symbol=INFY", text)
+
+
+class Watch(unittest.TestCase):
+    def test_a_corrupt_holdings_file_is_an_error_and_null_weights_are_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            kd = os.path.join(d, "kite")
+            os.makedirs(kd)
+            with open(os.path.join(kd, "holdings.json"), "w") as fh:
+                fh.write("{garbage")
+            with self.assertRaises(news.watchlist.WatchError):
+                news.watchlist.watch_list(kd, None)
+            code, _, err = run(["--kite-dir", kd, "--targets", os.path.join(d, "none.json"), "--now", NOW])
+            self.assertEqual(code, 2)
+            self.assertIn("holdings.json", err)
+            targets = os.path.join(d, "targets.json")
+            with open(targets, "w") as fh:
+                json.dump({"weights": None}, fh)
+            self.assertEqual(news.watchlist.watch_list(os.path.join(d, "none"), targets), [])
+            with open(targets, "w") as fh:
+                json.dump({"weights": ["x", {"symbol": "TCS"}]}, fh)
+            self.assertEqual(news.watchlist.watch_list(os.path.join(d, "none"), targets), ["TCS"])
+
+    def test_holdings_and_targets(self):
+        with tempfile.TemporaryDirectory() as d:
+            kd = os.path.join(d, "kite")
+            news.kite_snapshot.save("holdings", [{"tradingsymbol": "INFY"}, {"tradingsymbol": "TCS"}], kd,
+                                    now=datetime.datetime(2026, 1, 1, tzinfo=news.nse_calendar.IST))
+            targets = os.path.join(d, "targets.json")
+            with open(targets, "w") as fh:
+                json.dump({"weights": [{"symbol": "TCS", "weight": 1}, {"symbol": "HDFCBANK", "weight": 1}]}, fh)
+            self.assertEqual(news.watchlist.watch_list(kd, targets), ["INFY", "TCS", "HDFCBANK"])
+            code, _, err = run(["--kite-dir", os.path.join(d, "none"), "--targets", os.path.join(d, "none.json"),
+                                "--now", NOW])
+            self.assertEqual(code, 2)
+            self.assertIn("which stocks?", err)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,8 @@
+{
+  "status": "success",
+  "data": {
+    "NSE:INFY": {"instrument_token": 408065, "timestamp": "2026-10-26 15:29:58", "last_trade_time": "2026-10-26 15:29:57", "last_price": 1612.5, "last_quantity": 3, "volume": 5123456, "average_price": 1605.2, "net_change": 0, "lower_circuit_limit": 1451.25, "upper_circuit_limit": 1773.75, "ohlc": {"open": 1598.0, "high": 1620.0, "low": 1590.1, "close": 1590.0}},
+    "NSE:RELIANCE": {"instrument_token": 738561, "timestamp": "2026-10-26 15:29:59", "last_trade_time": "2026-10-26 15:29:58", "last_price": 1402.3, "last_quantity": 10, "volume": 8123000, "average_price": 1408.75, "net_change": 0, "lower_circuit_limit": 1274.95, "upper_circuit_limit": 1558.25, "ohlc": {"open": 1415.0, "high": 1419.9, "low": 1398.0, "close": 1416.6}},
+    "NSE:M&M": {"instrument_token": 519937, "timestamp": "2026-10-26 15:29:59", "last_trade_time": "2026-10-26 15:29:55", "last_price": 3250.0, "last_quantity": 1, "volume": 1450000, "average_price": 3231.4, "net_change": 0, "lower_circuit_limit": 2880.0, "upper_circuit_limit": 3520.0, "ohlc": {"open": 3205.0, "high": 3262.0, "low": 3198.5, "close": 3200.0}}
+  }
+}

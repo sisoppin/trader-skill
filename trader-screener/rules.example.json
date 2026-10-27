@@ -1,10 +1,10 @@
 {
-  "name": "Growing, profitable, not priced for perfection",
+  "name": "Growing, profitable, fairly priced",
   "rules": [
     {"metric": "revenue_growth_yoy", "op": ">=", "value": 10},
-    {"metric": "operating_margin", "op": ">=", "value": 25},
+    {"metric": "operating_margin", "op": ">=", "value": 15},
     {"metric": "eps_ttm", "op": ">", "value": 0},
-    {"metric": "pe", "op": "<=", "value": 35}
+    {"metric": "pe", "op": "<=", "value": 30}
   ],
   "rank": [
     {"metric": "revenue_growth_yoy", "order": "desc", "weight": 2},

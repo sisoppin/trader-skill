@@ -1,0 +1,5 @@
+{"_note": "synthetic rows for tests, in the shape of NSE's PIT answer", "acqNameList": [], "data": [
+ {"pid": "9001", "did": "1", "symbol": "ABC", "company": "ABC Limited", "acqName": "Promoter Holdings LLP", "personCategory": "Promoter Group", "acqMode": "Market Purchase", "tdpTransactionType": "-", "buyQuantity": "50000", "sellquantity": "0", "secAcq": "50000", "secVal": "7500000", "afterAcqSharesPer": "52.40", "secType": "Equity Shares", "date": "20-Oct-2026 18:05"},
+ {"pid": "9002", "did": "1", "symbol": "ABC", "company": "ABC Limited", "acqName": "A Director", "personCategory": "Director", "acqMode": "Market Sale", "tdpTransactionType": "-", "buyQuantity": "0", "sellquantity": "1200", "secAcq": "1200", "secVal": "180000", "afterAcqSharesPer": "0.01", "secType": "Equity Shares", "date": "21-Oct-2026 10:00"},
+ {"pid": "9003", "did": "1", "symbol": "ABC", "company": "ABC Limited", "acqName": "An Employee", "personCategory": "Employees/Designated Persons", "acqMode": "ESOP", "tdpTransactionType": "-", "buyQuantity": "0", "sellquantity": "0", "secAcq": "300", "secVal": "-", "afterAcqSharesPer": "-", "secType": "Equity Shares", "date": "05-Aug-2026 12:00"}
+]}
